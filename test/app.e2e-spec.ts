@@ -1,7 +1,7 @@
 import { ValidationPipe } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { createHmac } from 'node:crypto';
-import request from 'supertest';
+import * as request from 'supertest';
 import { DataSource } from 'typeorm';
 import { PasswordService } from '../src/auth/password.service';
 import {
