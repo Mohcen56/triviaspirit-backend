@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { OptionalTokenAuthGuard, TokenAuthGuard } from '../common/auth';
+import { RateLimitModule } from '../common/rate-limit.module';
 import {
   AuthTokenEntity,
   UserEntity,
@@ -15,6 +16,7 @@ import { PasswordService } from './password.service';
 @Module({
   imports: [
     TypeOrmModule.forFeature([UserEntity, UserProfileEntity, AuthTokenEntity]),
+    RateLimitModule,
     MediaModule,
   ],
   controllers: [AuthController],

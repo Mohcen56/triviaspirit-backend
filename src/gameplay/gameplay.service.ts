@@ -18,6 +18,7 @@ import {
   UserEntity,
 } from '../database/entities';
 import { MediaService } from '../media/media.service';
+import { CreateGameDto, FinishRoundDto } from './dto/gameplay.dto';
 
 @Injectable()
 export class GameplayService {
@@ -54,7 +55,7 @@ export class GameplayService {
     );
   }
 
-  async create(user: UserEntity, body: Record<string, unknown>) {
+  async create(user: UserEntity, body: CreateGameDto) {
     const rawCategoryIds = body.category_ids;
     if (!Array.isArray(rawCategoryIds) || !rawCategoryIds.length) {
       throw new BadRequestException({
@@ -95,7 +96,7 @@ export class GameplayService {
     const teamNames = Array.isArray(body.team_names) ? body.team_names : [];
     const teams = rawTeams.length
       ? rawTeams.map((team, index) => ({
-          ...(team as Record<string, unknown>),
+          ...team,
           id: index + 1,
         }))
       : teamNames.map((name, index) => ({
@@ -142,11 +143,7 @@ export class GameplayService {
     await this.games.remove(game);
   }
 
-  async finishRound(
-    id: number,
-    user: UserEntity,
-    body: Record<string, unknown>,
-  ) {
+  async finishRound(id: number, user: UserEntity, body: FinishRoundDto) {
     const game = await this.loadGame(id, user.id);
     this.assertGameAccess(game, user);
     if (!Array.isArray(body.played_question_ids)) {
@@ -163,7 +160,18 @@ export class GameplayService {
       });
     }
     if (!ids.length) return { status: 'ok', saved: 0 };
-    const questions = await this.questions.findBy({ id: In(ids) });
+    const categoryIds = (game.categoryLinks || []).map((link) =>
+      Number(link.categoryId),
+    );
+    const questions = await this.questions.findBy({
+      id: In(ids),
+      categoryId: In(categoryIds),
+    });
+    if (questions.length !== ids.length) {
+      throw new BadRequestException({
+        error: 'Every played question must belong to this game',
+      });
+    }
     const existing = await this.played.findBy({
       gameId: id,
       questionId: In(questions.map((item) => item.id)),
@@ -186,10 +194,10 @@ export class GameplayService {
     );
   }
 
-  async outsideBoard(id: number, user: UserEntity, rawCount?: string) {
+  async outsideBoard(id: number, user: UserEntity, rawCount?: number) {
     const game = await this.loadGame(id, user.id);
     this.assertGameAccess(game, user);
-    const countValue = Number(rawCount || 4);
+    const countValue = rawCount ?? 4;
     const count = Number.isFinite(countValue)
       ? Math.max(1, Math.min(Math.trunc(countValue), 10))
       : 4;

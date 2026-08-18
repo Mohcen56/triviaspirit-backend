@@ -2,41 +2,53 @@ import {
   BadRequestException,
   Injectable,
   InternalServerErrorException,
+  OnModuleInit,
   ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import { createHmac, timingSafeEqual } from 'node:crypto';
-import { Repository } from 'typeorm';
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import { EntityManager, QueryFailedError, Repository } from 'typeorm';
 import { stringValue } from '../common/utils';
 import {
   PaymentEntity,
+  PaymentWebhookEventEntity,
   SubscriptionEntity,
   UserEntity,
   UserProfileEntity,
 } from '../database/entities';
+import { CheckoutDto, PaymentWebhookDto } from './dto/payments.dto';
 
-type WebhookPayload = {
-  meta?: { event_name?: string; custom_data?: Record<string, unknown> };
-  data?: { id?: string | number; attributes?: Record<string, any> };
-};
+type WebhookPayload = PaymentWebhookDto;
 
 @Injectable()
-export class PaymentsService {
+export class PaymentsService implements OnModuleInit {
   constructor(
     @InjectRepository(PaymentEntity)
     private readonly payments: Repository<PaymentEntity>,
     @InjectRepository(SubscriptionEntity)
     private readonly subscriptions: Repository<SubscriptionEntity>,
-    @InjectRepository(UserEntity)
-    private readonly users: Repository<UserEntity>,
-    @InjectRepository(UserProfileEntity)
-    private readonly profiles: Repository<UserProfileEntity>,
     private readonly config: ConfigService,
   ) {}
 
-  async createCheckout(user: UserEntity, body: Record<string, unknown>) {
+  onModuleInit() {
+    const paymentApiConfigured = [
+      'LEMONSQUEEZY_API_KEY',
+      'LEMONSQUEEZY_STORE_ID',
+      'LEMONSQUEEZY_VARIANT_ID',
+    ].some((name) => Boolean(this.config.get<string>(name)));
+    if (
+      paymentApiConfigured &&
+      !this.config.get<string>('LEMONSQUEEZY_WEBHOOK_SECRET')
+    ) {
+      throw new Error(
+        'LEMONSQUEEZY_WEBHOOK_SECRET is required when payments are configured',
+      );
+    }
+  }
+
+  async createCheckout(user: UserEntity, body: CheckoutDto) {
     const apiKey = this.config.get<string>('LEMONSQUEEZY_API_KEY');
     const storeId = this.config.get<string>('LEMONSQUEEZY_STORE_ID');
     const variantId = this.config.get<string>('LEMONSQUEEZY_VARIANT_ID');
@@ -94,31 +106,58 @@ export class PaymentsService {
   }
 
   async webhook(
-    rawBody: Buffer,
+    rawBody: Buffer | undefined,
     body: WebhookPayload,
     signature: string | undefined,
   ) {
-    if (this.config.get('NODE_ENV', 'development') === 'production') {
-      if (!this.verifySignature(rawBody, signature || '')) {
-        throw new UnauthorizedException({ error: 'Invalid signature' });
-      }
+    if (!this.config.get<string>('LEMONSQUEEZY_WEBHOOK_SECRET')) {
+      throw new ServiceUnavailableException({
+        error: 'Payment webhook is not configured',
+      });
     }
-    const eventName = body.meta?.event_name;
-    switch (eventName) {
-      case 'order_created':
-        await this.handleOrderCreated(body);
-        break;
-      case 'order_refunded':
-        await this.handleOrderRefunded(body);
-        break;
-      case 'subscription_created':
-      case 'subscription_updated':
-      case 'subscription_cancelled':
-      case 'subscription_expired':
-        await this.handleSubscription(body);
-        break;
-      default:
-        return { status: 'ignored' };
+    if (!rawBody || !this.verifySignature(rawBody, signature || '')) {
+      throw new UnauthorizedException({ error: 'Invalid signature' });
+    }
+
+    const eventName = body.meta.event_name;
+    const handledEvents = new Set([
+      'order_created',
+      'order_refunded',
+      'subscription_created',
+      'subscription_updated',
+      'subscription_cancelled',
+      'subscription_expired',
+    ]);
+    if (!handledEvents.has(eventName)) return { status: 'ignored' };
+
+    const fingerprint = createHash('sha256').update(rawBody).digest('hex');
+    try {
+      await this.payments.manager.transaction(async (manager) => {
+        await manager.insert(PaymentWebhookEventEntity, {
+          fingerprint,
+          eventName,
+          resourceId: String(body.data.id),
+          processedAt: null,
+        });
+        switch (eventName) {
+          case 'order_created':
+            await this.handleOrderCreated(body, manager);
+            break;
+          case 'order_refunded':
+            await this.handleOrderRefunded(body, manager);
+            break;
+          default:
+            await this.handleSubscription(body, manager);
+        }
+        await manager.update(
+          PaymentWebhookEventEntity,
+          { fingerprint },
+          { processedAt: new Date() },
+        );
+      });
+    } catch (error) {
+      if (this.isDuplicateWebhook(error)) return { status: 'duplicate' };
+      throw error;
     }
     return { status: 'success' };
   }
@@ -156,85 +195,112 @@ export class PaymentsService {
   private verifySignature(payload: Buffer, signature: string): boolean {
     const secret = this.config.get<string>('LEMONSQUEEZY_WEBHOOK_SECRET');
     if (!secret || !signature) return false;
-    const expected = createHmac('sha256', secret).update(payload).digest('hex');
-    const a = Buffer.from(signature);
-    const b = Buffer.from(expected);
+    const expected = createHmac('sha256', secret).update(payload).digest();
+    const provided = signature.trim();
+    if (!/^[a-f\d]{64}$/i.test(provided)) return false;
+    const a = Buffer.from(provided, 'hex');
+    const b = expected;
     return a.length === b.length && timingSafeEqual(a, b);
   }
 
-  private async handleOrderCreated(payload: WebhookPayload) {
-    const user = await this.webhookUser(payload);
-    if (!user) return;
-    const attributes = payload.data?.attributes || {};
-    const item = attributes.first_order_item || {};
-    const orderId = String(
-      payload.data?.id || attributes.order_id || attributes.order_number || '',
+  private async handleOrderCreated(
+    payload: WebhookPayload,
+    manager: EntityManager,
+  ) {
+    const user = await this.webhookUser(payload, manager);
+    if (!user)
+      throw new BadRequestException({ error: 'Webhook user is invalid' });
+    const attributes = payload.data.attributes;
+    const item = (attributes.first_order_item || {}) as Record<string, unknown>;
+    const orderId = stringValue(
+      payload.data.id || attributes.order_id || attributes.order_number || '',
     );
     if (!orderId)
       throw new BadRequestException({ error: 'Webhook order ID is missing' });
-    let payment = await this.payments.findOneBy({ orderId });
-    payment = this.payments.create({
+    const repository = manager.getRepository(PaymentEntity);
+    let payment = await repository.findOneBy({ orderId });
+    payment = repository.create({
       ...payment,
       orderId,
       userId: user.id,
-      customerId: String(attributes.customer_id || ''),
-      amount: String(attributes.total || 0),
-      currency: String(attributes.currency || 'USD').slice(0, 3),
-      status: String(attributes.status || 'paid'),
-      variantId: String(item.variant_id || ''),
-      productName: String(item.product_name || ''),
+      customerId: stringValue(attributes.customer_id),
+      amount: stringValue(attributes.total, '0'),
+      currency: stringValue(attributes.currency, 'USD').slice(0, 3),
+      status: stringValue(attributes.status, 'paid'),
+      variantId: stringValue(item.variant_id),
+      productName: stringValue(item.product_name),
       paidAt: new Date(),
-      webhookData: payload as Record<string, unknown>,
+      webhookData: payload as unknown as Record<string, unknown>,
     });
-    await this.payments.save(payment);
-    await this.setPremium(user.id, true, null);
+    await repository.save(payment);
+    await this.setPremium(user.id, true, null, manager);
   }
 
-  private async handleOrderRefunded(payload: WebhookPayload) {
-    const user = await this.webhookUser(payload);
-    if (!user) return;
-    const attributes = payload.data?.attributes || {};
-    const orderId = String(
-      payload.data?.id || attributes.order_id || attributes.order_number || '',
+  private async handleOrderRefunded(
+    payload: WebhookPayload,
+    manager: EntityManager,
+  ) {
+    const attributes = payload.data.attributes;
+    const orderId = stringValue(
+      payload.data.id || attributes.order_id || attributes.order_number || '',
     );
-    const payment = orderId ? await this.payments.findOneBy({ orderId }) : null;
+    const paymentRepository = manager.getRepository(PaymentEntity);
+    const payment = orderId
+      ? await paymentRepository.findOneBy({ orderId })
+      : null;
+    const user = payment
+      ? await manager
+          .getRepository(UserEntity)
+          .findOneBy({ id: payment.userId })
+      : await this.webhookUser(payload, manager);
+    if (!user)
+      throw new BadRequestException({ error: 'Webhook user is invalid' });
     if (payment) {
       payment.status = 'refunded';
-      payment.webhookData = payload;
-      await this.payments.save(payment);
+      payment.webhookData = payload as unknown as Record<string, unknown>;
+      await paymentRepository.save(payment);
     }
     await this.setPremium(
       user.id,
       false,
       new Date().toISOString().slice(0, 10),
+      manager,
     );
   }
 
-  private async handleSubscription(payload: WebhookPayload) {
-    const attributes = payload.data?.attributes || {};
-    const subscriptionId = String(payload.data?.id || '');
+  private async handleSubscription(
+    payload: WebhookPayload,
+    manager: EntityManager,
+  ) {
+    const attributes = payload.data.attributes;
+    const subscriptionId = String(payload.data.id || '');
     if (!subscriptionId)
       throw new BadRequestException({ error: 'Subscription ID is missing' });
-    let subscription = await this.subscriptions.findOneBy({ subscriptionId });
+    const subscriptionRepository = manager.getRepository(SubscriptionEntity);
+    const userRepository = manager.getRepository(UserEntity);
+    let subscription = await subscriptionRepository.findOneBy({
+      subscriptionId,
+    });
     let user: UserEntity | null = null;
     if (subscription)
-      user = await this.users.findOneBy({ id: subscription.userId });
-    if (!user) user = await this.webhookUser(payload);
-    if (!user) return;
-    subscription = this.subscriptions.create({
+      user = await userRepository.findOneBy({ id: subscription.userId });
+    if (!user) user = await this.webhookUser(payload, manager);
+    if (!user)
+      throw new BadRequestException({ error: 'Webhook user is invalid' });
+    subscription = subscriptionRepository.create({
       ...subscription,
       subscriptionId,
       userId: user.id,
-      customerId: String(attributes.customer_id || ''),
-      orderId: String(attributes.order_id || ''),
-      variantId: String(attributes.variant_id || ''),
-      productName: String(attributes.product_name || ''),
-      status: String(attributes.status || 'expired'),
+      customerId: stringValue(attributes.customer_id),
+      orderId: stringValue(attributes.order_id),
+      variantId: stringValue(attributes.variant_id),
+      productName: stringValue(attributes.product_name),
+      status: stringValue(attributes.status, 'expired'),
       trialEndsAt: this.date(attributes.trial_ends_at),
       renewsAt: this.date(attributes.renews_at),
       endsAt: this.date(attributes.ends_at),
     });
-    await this.subscriptions.save(subscription);
+    await subscriptionRepository.save(subscription);
     const active = ['on_trial', 'active'].includes(subscription.status);
     await this.setPremium(
       user.id,
@@ -242,30 +308,48 @@ export class PaymentsService {
       active
         ? this.dateOnly(subscription.renewsAt)
         : this.dateOnly(subscription.endsAt),
+      manager,
     );
   }
 
   private async webhookUser(
     payload: WebhookPayload,
+    manager: EntityManager,
   ): Promise<UserEntity | null> {
-    const id = Number(payload.meta?.custom_data?.user_id);
+    const id = Number(payload.meta.custom_data?.user_id);
     if (!Number.isSafeInteger(id) || id <= 0) return null;
-    return this.users.findOneBy({ id });
+    return manager.getRepository(UserEntity).findOneBy({ id });
   }
 
   private async setPremium(
     userId: number,
     premium: boolean,
     expiry: string | null,
+    manager: EntityManager,
   ) {
-    let profile = await this.profiles.findOneBy({ userId });
-    profile = this.profiles.create({
+    const repository = manager.getRepository(UserProfileEntity);
+    let profile = await repository.findOneBy({ userId });
+    profile = repository.create({
       ...profile,
       userId,
       isPremium: premium,
       premiumExpiry: expiry,
     });
-    await this.profiles.save(profile);
+    await repository.save(profile);
+  }
+
+  private isDuplicateWebhook(error: unknown): boolean {
+    if (!(error instanceof QueryFailedError)) return false;
+    const driverError = error.driverError as {
+      code?: string;
+      constraint?: string;
+      detail?: string;
+    };
+    return (
+      driverError.code === '23505' &&
+      (driverError.constraint === 'UQ_payments_webhook_event_fingerprint' ||
+        driverError.detail?.includes('(fingerprint)') === true)
+    );
   }
 
   private date(value: unknown): Date | null {

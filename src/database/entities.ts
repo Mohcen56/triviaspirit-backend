@@ -457,6 +457,45 @@ export class SubscriptionEntity extends BaseEntity {
   updatedAt: Date;
 }
 
+@Entity('payments_webhook_event')
+export class PaymentWebhookEventEntity extends BaseEntity {
+  @PrimaryGeneratedColumn({ type: 'bigint' })
+  id: number;
+
+  @Column({ type: 'varchar', length: 64, unique: true })
+  fingerprint: string;
+
+  @Column({ name: 'event_name', type: 'varchar', length: 100 })
+  eventName: string;
+
+  @Column({ name: 'resource_id', type: 'varchar', length: 255, default: '' })
+  resourceId: string;
+
+  @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
+  createdAt: Date;
+
+  @Column({ name: 'processed_at', type: 'timestamptz', nullable: true })
+  processedAt: Date | null;
+}
+
+@Entity('security_auth_rate_limit')
+export class AuthRateLimitEntity extends BaseEntity {
+  @PrimaryColumn({ name: 'rate_key', type: 'varchar', length: 255 })
+  rateKey: string;
+
+  @Column({ name: 'total_hits', type: 'integer' })
+  totalHits: number;
+
+  @Column({ name: 'expires_at', type: 'timestamptz' })
+  expiresAt: Date;
+
+  @Column({ name: 'blocked_until', type: 'timestamptz', nullable: true })
+  blockedUntil: Date | null;
+
+  @UpdateDateColumn({ name: 'updated_at', type: 'timestamptz' })
+  updatedAt: Date;
+}
+
 export const ENTITIES = [
   UserEntity,
   UserProfileEntity,
@@ -471,4 +510,6 @@ export const ENTITIES = [
   PlayedQuestionEntity,
   PaymentEntity,
   SubscriptionEntity,
+  PaymentWebhookEventEntity,
+  AuthRateLimitEntity,
 ];

@@ -13,6 +13,11 @@ import { CurrentUser, TokenAuthGuard } from '../common/auth';
 import { integerId } from '../common/utils';
 import { UserEntity } from '../database/entities';
 import { GameplayService } from './gameplay.service';
+import {
+  CreateGameDto,
+  FinishRoundDto,
+  OutsideBoardQueryDto,
+} from './dto/gameplay.dto';
 
 @Controller('api/gameplay')
 @UseGuards(TokenAuthGuard)
@@ -35,10 +40,7 @@ export class GameplayController {
   }
 
   @Post('games')
-  create(
-    @CurrentUser() user: UserEntity,
-    @Body() body: Record<string, unknown>,
-  ) {
+  create(@CurrentUser() user: UserEntity, @Body() body: CreateGameDto) {
     return this.gameplay.create(user, body);
   }
 
@@ -50,10 +52,10 @@ export class GameplayController {
   @Get('games/:id/prefetch_outside_board')
   outsideBoard(
     @Param('id') id: string,
-    @Query('count') count: string | undefined,
+    @Query() query: OutsideBoardQueryDto,
     @CurrentUser() user: UserEntity,
   ) {
-    return this.gameplay.outsideBoard(integerId(id), user, count);
+    return this.gameplay.outsideBoard(integerId(id), user, query.count);
   }
 
   @Post('games/:id/finish_round')
@@ -61,7 +63,7 @@ export class GameplayController {
   finishRound(
     @Param('id') id: string,
     @CurrentUser() user: UserEntity,
-    @Body() body: Record<string, unknown>,
+    @Body() body: FinishRoundDto,
   ) {
     return this.gameplay.finishRound(integerId(id), user, body);
   }

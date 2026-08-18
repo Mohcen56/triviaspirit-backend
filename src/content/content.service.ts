@@ -19,6 +19,15 @@ import {
   UserEntity,
 } from '../database/entities';
 import { MediaService } from '../media/media.service';
+import {
+  AddQuestionsDto,
+  CategoryPrivacy,
+  CreateCategoryDto,
+  CreateQuestionDto,
+  CreateQuestionInputDto,
+  UpdateCategoryDto,
+  UpdateQuestionDto,
+} from './dto/content.dto';
 
 type UploadMap = Map<string, Express.Multer.File>;
 
@@ -44,6 +53,14 @@ export class ContentService {
     user: UserEntity | undefined,
     category: CategoryEntity,
   ): boolean {
+    if (
+      category.isCustom &&
+      !user?.isStaff &&
+      category.createdById !== user?.id &&
+      (!category.isApproved || category.privacy !== 'public')
+    ) {
+      return false;
+    }
     if (!category.locked) return true;
     if (!user?.profile?.isPremium) return false;
     const expiry = user.profile.premiumExpiry;
@@ -275,7 +292,7 @@ export class ContentService {
 
   async createQuestion(
     user: UserEntity,
-    body: Record<string, unknown>,
+    body: CreateQuestionDto,
     files: Express.Multer.File[],
   ) {
     const categoryId = integerId(
@@ -296,7 +313,7 @@ export class ContentService {
   async updateQuestion(
     id: number,
     user: UserEntity,
-    body: Record<string, unknown>,
+    body: UpdateQuestionDto,
     files: Express.Multer.File[],
   ) {
     const question = await this.questions.findOne({
@@ -347,7 +364,7 @@ export class ContentService {
 
   async createUserCategory(
     user: UserEntity,
-    body: Record<string, unknown>,
+    body: CreateCategoryDto,
     files: Express.Multer.File[],
   ) {
     if (!stringValue(body.name).trim())
@@ -355,7 +372,7 @@ export class ContentService {
     const category = this.categories.create({
       name: stringValue(body.name).trim(),
       description: stringValue(body.description),
-      privacy: body.privacy === 'private' ? 'private' : 'public',
+      privacy: body.privacy === CategoryPrivacy.Private ? 'private' : 'public',
       isCustom: true,
       isApproved: false,
       isHidden: false,
@@ -389,7 +406,7 @@ export class ContentService {
   async updateUserCategory(
     id: number,
     user: UserEntity,
-    body: Record<string, unknown>,
+    body: UpdateCategoryDto,
     files: Express.Multer.File[],
   ) {
     const category = await this.getVisibleUserCategory(id, user);
@@ -398,7 +415,8 @@ export class ContentService {
     if (body.description !== undefined)
       category.description = stringValue(body.description);
     if (body.privacy !== undefined)
-      category.privacy = body.privacy === 'private' ? 'private' : 'public';
+      category.privacy =
+        body.privacy === CategoryPrivacy.Private ? 'private' : 'public';
     const uploadMap = this.fileMap(files);
     if (uploadMap.get('image'))
       category.image = (
@@ -434,7 +452,7 @@ export class ContentService {
   async addQuestions(
     id: number,
     user: UserEntity,
-    body: Record<string, unknown>,
+    body: AddQuestionsDto,
     files: Express.Multer.File[],
   ) {
     const category = await this.getVisibleUserCategory(id, user);
@@ -624,6 +642,13 @@ export class ContentService {
     category: CategoryEntity,
   ) {
     if (!this.canAccessCategory(user, category)) {
+      if (
+        category.isCustom &&
+        category.createdById !== user?.id &&
+        (!category.isApproved || category.privacy !== 'public')
+      ) {
+        throw new NotFoundException();
+      }
       throw new ForbiddenException({
         detail: 'You do not have access to this category.',
       });
@@ -691,7 +716,7 @@ export class ContentService {
 
   private async applyQuestionInput(
     question: QuestionEntity,
-    body: Record<string, unknown>,
+    body: CreateQuestionInputDto | CreateQuestionDto | UpdateQuestionDto,
     files: UploadMap,
     partial = false,
   ) {
@@ -740,23 +765,21 @@ export class ContentService {
   }
 
   private parseQuestionInputs(
-    body: Record<string, unknown>,
+    body: CreateCategoryDto | UpdateCategoryDto | AddQuestionsDto,
     uploads: UploadMap,
   ) {
-    const values = new Map<number, Record<string, unknown>>();
+    const values = new Map<number, CreateQuestionInputDto>();
     const raw = body.questions;
     if (typeof raw === 'string') {
       try {
-        const parsed = JSON.parse(raw) as Array<Record<string, unknown>>;
+        const parsed = JSON.parse(raw) as CreateQuestionInputDto[];
         if (Array.isArray(parsed))
           parsed.forEach((item, index) => values.set(index, item));
       } catch {
         throw new BadRequestException({ error: 'Invalid questions format' });
       }
     } else if (Array.isArray(raw)) {
-      raw.forEach((item, index) =>
-        values.set(index, item as Record<string, unknown>),
-      );
+      raw.forEach((item, index) => values.set(index, item));
     }
     for (const [key, value] of Object.entries(body)) {
       const match = key.match(/^questions\[(\d+)]\[(\w+)]$/);
@@ -764,12 +787,12 @@ export class ContentService {
         values.set(Number(match[1]), {
           ...(values.get(Number(match[1])) || {}),
           [match[2]]: value,
-        });
+        } as CreateQuestionInputDto);
     }
     for (const key of uploads.keys()) {
       const match = key.match(/^questions\[(\d+)]\[(image|answer_image)]$/);
       if (match && !values.has(Number(match[1])))
-        values.set(Number(match[1]), {});
+        values.set(Number(match[1]), {} as CreateQuestionInputDto);
     }
     return [...values.entries()]
       .sort(([a], [b]) => a - b)

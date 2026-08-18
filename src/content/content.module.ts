@@ -12,6 +12,7 @@ import {
 import { MediaModule } from '../media/media.module';
 import { ContentController } from './content.controller';
 import { ContentService } from './content.service';
+import { MultipartQuestionInterceptor } from './multipart-question.interceptor';
 
 @Module({
   imports: [
@@ -27,7 +28,7 @@ import { ContentService } from './content.service';
     MediaModule,
   ],
   controllers: [ContentController],
-  providers: [ContentService],
+  providers: [ContentService, MultipartQuestionInterceptor],
   exports: [ContentService],
 })
 export class ContentModule {}

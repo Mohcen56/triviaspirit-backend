@@ -3,6 +3,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { AuthModule } from '../auth/auth.module';
 import {
   PaymentEntity,
+  PaymentWebhookEventEntity,
   SubscriptionEntity,
   UserEntity,
   UserProfileEntity,
@@ -14,6 +15,7 @@ import { PaymentsService } from './payments.service';
   imports: [
     TypeOrmModule.forFeature([
       PaymentEntity,
+      PaymentWebhookEventEntity,
       SubscriptionEntity,
       UserEntity,
       UserProfileEntity,

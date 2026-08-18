@@ -29,7 +29,6 @@ import { PasswordService } from './password.service';
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
-  private readonly resetRequests = new Map<string, number>();
 
   constructor(
     @InjectRepository(UserEntity)
@@ -165,9 +164,13 @@ export class AuthService {
     if (!(await this.passwords.verify(dto.current_password, user.password))) {
       throw new BadRequestException({ error: 'Current password is incorrect' });
     }
-    user.password = await this.passwords.hash(dto.new_password);
-    await this.users.save(user);
-    return { message: 'Password changed successfully' };
+    const password = await this.passwords.hash(dto.new_password);
+    const token = await this.users.manager.transaction(async (manager) => {
+      user.password = password;
+      await manager.save(UserEntity, user);
+      return this.rotateToken(user.id, manager);
+    });
+    return { message: 'Password changed successfully', token };
   }
 
   async googleOAuth(dto: GoogleOAuthDto) {
@@ -230,11 +233,6 @@ export class AuthService {
 
   async requestPasswordReset(email: string) {
     const normalized = email.trim().toLowerCase();
-    const last = this.resetRequests.get(normalized) || 0;
-    if (Date.now() - last < 60_000) {
-      return { detail: 'Please wait before requesting again.' };
-    }
-    this.resetRequests.set(normalized, Date.now());
     const user = await this.users.findOne({
       where: { email: ILike(normalized) },
     });
@@ -261,6 +259,7 @@ export class AuthService {
     let userId: number;
     try {
       userId = Number(Buffer.from(dto.uid, 'base64url').toString());
+      if (!Number.isSafeInteger(userId) || userId <= 0) throw new Error();
     } catch {
       throw new BadRequestException({ detail: 'Invalid link or user.' });
     }
@@ -270,9 +269,18 @@ export class AuthService {
     if (!this.passwords.verifyResetToken(user.id, user.password, dto.token)) {
       throw new BadRequestException({ detail: 'Invalid or expired token.' });
     }
-    user.password = await this.passwords.hash(dto.new_password);
-    await this.users.save(user);
+    const password = await this.passwords.hash(dto.new_password);
+    await this.users.manager.transaction(async (manager) => {
+      user.password = password;
+      await manager.save(UserEntity, user);
+      await this.rotateToken(user.id, manager);
+    });
     return { detail: 'Password has been reset successfully.' };
+  }
+
+  async logout(userId: number) {
+    await this.tokens.delete({ userId });
+    return { detail: 'Successfully logged out.' };
   }
 
   serializeUser(user: UserEntity) {
@@ -317,6 +325,17 @@ export class AuthService {
     if (existing) return existing.key;
     const key = randomBytes(20).toString('hex');
     await this.tokens.save(this.tokens.create({ key, userId }));
+    return key;
+  }
+
+  private async rotateToken(
+    userId: number,
+    manager: import('typeorm').EntityManager,
+  ): Promise<string> {
+    const repository = manager.getRepository(AuthTokenEntity);
+    await repository.delete({ userId });
+    const key = randomBytes(20).toString('hex');
+    await repository.save(repository.create({ key, userId }));
     return key;
   }
 

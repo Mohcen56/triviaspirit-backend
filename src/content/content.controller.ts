@@ -22,6 +22,14 @@ import {
 import { integerId } from '../common/utils';
 import { UserEntity } from '../database/entities';
 import { ContentService } from './content.service';
+import {
+  AddQuestionsDto,
+  CreateCategoryDto,
+  CreateQuestionDto,
+  UpdateCategoryDto,
+  UpdateQuestionDto,
+} from './dto/content.dto';
+import { MultipartQuestionInterceptor } from './multipart-question.interceptor';
 
 const uploadOptions = { limits: { fileSize: 10 * 1024 * 1024, files: 30 } };
 
@@ -88,7 +96,7 @@ export class ContentController {
   @UseInterceptors(AnyFilesInterceptor(uploadOptions))
   createQuestion(
     @CurrentUser() user: UserEntity,
-    @Body() body: Record<string, unknown>,
+    @Body() body: CreateQuestionDto,
     @UploadedFiles() files: Express.Multer.File[] = [],
   ) {
     return this.content.createQuestion(user, body, files);
@@ -106,7 +114,7 @@ export class ContentController {
   updateQuestion(
     @Param('id') id: string,
     @CurrentUser() user: UserEntity,
-    @Body() body: Record<string, unknown>,
+    @Body() body: UpdateQuestionDto,
     @UploadedFiles() files: Express.Multer.File[] = [],
   ) {
     return this.content.updateQuestion(integerId(id), user, body, files);
@@ -118,7 +126,7 @@ export class ContentController {
   patchQuestion(
     @Param('id') id: string,
     @CurrentUser() user: UserEntity,
-    @Body() body: Record<string, unknown>,
+    @Body() body: UpdateQuestionDto,
     @UploadedFiles() files: Express.Multer.File[] = [],
   ) {
     return this.content.updateQuestion(integerId(id), user, body, files);
@@ -154,10 +162,13 @@ export class ContentController {
 
   @Post('user-categories')
   @UseGuards(TokenAuthGuard)
-  @UseInterceptors(AnyFilesInterceptor(uploadOptions))
+  @UseInterceptors(
+    AnyFilesInterceptor(uploadOptions),
+    MultipartQuestionInterceptor,
+  )
   createUserCategory(
     @CurrentUser() user: UserEntity,
-    @Body() body: Record<string, unknown>,
+    @Body() body: CreateCategoryDto,
     @UploadedFiles() files: Express.Multer.File[] = [],
   ) {
     return this.content.createUserCategory(user, body, files);
@@ -171,11 +182,14 @@ export class ContentController {
 
   @Put('user-categories/:id')
   @UseGuards(TokenAuthGuard)
-  @UseInterceptors(AnyFilesInterceptor(uploadOptions))
+  @UseInterceptors(
+    AnyFilesInterceptor(uploadOptions),
+    MultipartQuestionInterceptor,
+  )
   updateUserCategory(
     @Param('id') id: string,
     @CurrentUser() user: UserEntity,
-    @Body() body: Record<string, unknown>,
+    @Body() body: UpdateCategoryDto,
     @UploadedFiles() files: Express.Multer.File[] = [],
   ) {
     return this.content.updateUserCategory(integerId(id), user, body, files);
@@ -183,11 +197,14 @@ export class ContentController {
 
   @Patch('user-categories/:id')
   @UseGuards(TokenAuthGuard)
-  @UseInterceptors(AnyFilesInterceptor(uploadOptions))
+  @UseInterceptors(
+    AnyFilesInterceptor(uploadOptions),
+    MultipartQuestionInterceptor,
+  )
   patchUserCategory(
     @Param('id') id: string,
     @CurrentUser() user: UserEntity,
-    @Body() body: Record<string, unknown>,
+    @Body() body: UpdateCategoryDto,
     @UploadedFiles() files: Express.Multer.File[] = [],
   ) {
     return this.content.updateUserCategory(integerId(id), user, body, files);
@@ -205,11 +222,14 @@ export class ContentController {
 
   @Post('user-categories/:id/add_questions')
   @UseGuards(TokenAuthGuard)
-  @UseInterceptors(AnyFilesInterceptor(uploadOptions))
+  @UseInterceptors(
+    AnyFilesInterceptor(uploadOptions),
+    MultipartQuestionInterceptor,
+  )
   addQuestions(
     @Param('id') id: string,
     @CurrentUser() user: UserEntity,
-    @Body() body: Record<string, unknown>,
+    @Body() body: AddQuestionsDto,
     @UploadedFiles() files: Express.Multer.File[] = [],
   ) {
     return this.content.addQuestions(integerId(id), user, body, files);

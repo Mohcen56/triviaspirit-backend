@@ -11,7 +11,9 @@ import {
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
+import { Throttle, hours, minutes } from '@nestjs/throttler';
 import { CurrentUser, TokenAuthGuard } from '../common/auth';
+import { AuthThrottlerGuard } from '../common/rate-limit';
 import { UserEntity } from '../database/entities';
 import { AuthService } from './auth.service';
 import {
@@ -25,21 +27,38 @@ import {
 } from './dto/auth.dto';
 
 @Controller('api/auth')
+@UseGuards(AuthThrottlerGuard)
+@Throttle({
+  ip: { limit: 120, ttl: minutes(1) },
+  account: { limit: 120, ttl: minutes(1) },
+})
 export class AuthController {
   constructor(private readonly auth: AuthService) {}
 
   @Post('login')
   @HttpCode(HttpStatus.OK)
+  @Throttle({
+    ip: { limit: 10, ttl: minutes(1) },
+    account: { limit: 5, ttl: minutes(5) },
+  })
   login(@Body() dto: LoginDto) {
     return this.auth.login(dto);
   }
 
   @Post('register')
+  @Throttle({
+    ip: { limit: 5, ttl: hours(1) },
+    account: { limit: 5, ttl: hours(1) },
+  })
   register(@Body() dto: RegisterDto) {
     return this.auth.register(dto);
   }
 
   @Post('google-oauth')
+  @Throttle({
+    ip: { limit: 10, ttl: minutes(1) },
+    account: { limit: 10, ttl: minutes(1) },
+  })
   googleOAuth(@Body() dto: GoogleOAuthDto) {
     return this.auth.googleOAuth(dto);
   }
@@ -83,13 +102,28 @@ export class AuthController {
 
   @Post('password-reset')
   @HttpCode(HttpStatus.OK)
+  @Throttle({
+    ip: { limit: 5, ttl: hours(1) },
+    account: { limit: 3, ttl: hours(1) },
+  })
   passwordReset(@Body() dto: PasswordResetRequestDto) {
     return this.auth.requestPasswordReset(dto.email);
   }
 
   @Post('password-reset-confirm')
   @HttpCode(HttpStatus.OK)
+  @Throttle({
+    ip: { limit: 10, ttl: hours(1) },
+    account: { limit: 5, ttl: hours(1) },
+  })
   passwordResetConfirm(@Body() dto: PasswordResetConfirmDto) {
     return this.auth.confirmPasswordReset(dto);
+  }
+
+  @Post('logout')
+  @UseGuards(TokenAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  logout(@CurrentUser() user: UserEntity) {
+    return this.auth.logout(user.id);
   }
 }

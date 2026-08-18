@@ -1,20 +1,25 @@
 {
-  "name": "triviaspirit-nestjs-backend",
+  "name": "triviaspirit-backend",
   "version": "1.0.0",
   "private": true,
-  "description": "NestJS replacement API for the triviaspirit Django backend",
-  "license": "UNLICENSED",
+  "description": "Production NestJS API powering TriviaSpirit, migrated from Django with database and API compatibility",
+  "license": "MIT",
   "scripts": {
     "build": "nest build",
-    "format": "prettier --write \"src/**/*.ts\"",
-    "format:check": "prettier --check \"src/**/*.ts\"",
+    "format": "prettier --write \"{src,test}/**/*.ts\"",
+    "format:check": "prettier --check \"{src,test}/**/*.ts\"",
     "start": "nest start",
     "start:dev": "nest start --watch",
     "start:prod": "node dist/main.js",
     "lint": "eslint \"{src,test}/**/*.ts\" --max-warnings=0",
     "test": "jest",
     "test:watch": "jest --watch",
-    "test:cov": "jest --coverage"
+    "test:cov": "jest --coverage",
+    "test:e2e": "jest --config ./test/jest-e2e.json --runInBand",
+    "migration:generate": "typeorm-ts-node-commonjs migration:generate src/database/migrations/Generated -d src/database/data-source.ts",
+    "migration:run": "typeorm-ts-node-commonjs migration:run -d src/database/data-source.ts",
+    "migration:revert": "typeorm-ts-node-commonjs migration:revert -d src/database/data-source.ts",
+    "migration:show": "typeorm-ts-node-commonjs migration:show -d src/database/data-source.ts"
   },
   "engines": {
     "node": ">=20.0.0"
@@ -27,10 +32,12 @@
     "@nestjs/config": "^4.0.2",
     "@nestjs/core": "^11.1.6",
     "@nestjs/platform-express": "^11.1.6",
+    "@nestjs/throttler": "^6.5.0",
     "@nestjs/typeorm": "^11.0.0",
     "adminjs": "^7.8.17",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.2",
+    "dotenv": "^17.2.1",
     "express-formidable": "^1.2.0",
     "express-session": "^1.18.2",
     "google-auth-library": "^10.2.1",
@@ -82,7 +89,13 @@
       "^.+\\.(t|j)s$": "ts-jest"
     },
     "collectCoverageFrom": [
-      "**/*.(t|j)s"
+      "**/*.ts",
+      "!**/*.spec.ts",
+      "!main.ts",
+      "!admin/**",
+      "!database/data-source.ts",
+      "!**/*.dto.ts",
+      "!**/*.module.ts"
     ],
     "coverageDirectory": "../coverage",
     "testEnvironment": "node"
