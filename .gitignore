@@ -1,0 +1,15 @@
+node_modules/
+.npm-cache/
+dist/
+coverage/
+.adminjs/
+.env
+.env.*
+!.env.example
+/media/
+*.log
+*.tsbuildinfo
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
