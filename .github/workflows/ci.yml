@@ -61,7 +61,7 @@ jobs:
         run: npm run test:e2e
 
       - name: Upload coverage
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v7
         with:
           use_oidc: true
           files: ./coverage/lcov.info,./coverage/e2e/lcov.info
