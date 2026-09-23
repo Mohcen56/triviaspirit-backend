@@ -1,4 +1,4 @@
-# TriviaSpirit Backend
+# TriviaSpirit NestJS Backend
 
 [![CI](https://github.com/Mohcen56/triviaspirit-backend/actions/workflows/ci.yml/badge.svg)](https://github.com/Mohcen56/triviaspirit-backend/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/Mohcen56/triviaspirit-backend/branch/main/graph/badge.svg)](https://codecov.io/gh/Mohcen56/triviaspirit-backend)
@@ -6,23 +6,23 @@
 
 [Production API health](https://api.triviaspirit.com/health) | [Local API health](http://localhost:8000/health)
 
-Production NestJS API powering TriviaSpirit, migrated from Django with database and API compatibility. It preserves the routes, response shapes, database tables, Django PBKDF2 passwords, and DRF authentication tokens used by the existing frontend and database.
+TriviaSpirit is a NestJS and TypeScript backend for a turn-based trivia game. It provides the REST API used by the frontend, persists data in PostgreSQL, and preserves compatibility with the existing Django database, routes, response shapes, PBKDF2 passwords, and DRF authentication tokens.
 
 - `/api/auth/*` - email/password auth, Google OAuth, profiles, avatars, logout, and password reset
 - `/api/content/*` - collections, official/custom categories, questions, saves, and likes
-- `/api/gameplay/*` - games, question boards, round completion, stats, and history
+- `/api/gameplay/*` - turn-based games, persisted question boards, round completion, stats, and history
 - `/api/payments/*` - Lemon Squeezy checkout, signed webhooks, and payment history
 
-## Migration architecture
+## Backend architecture
 
-The controller layer keeps the existing frontend contract and validates every write with DTOs. Domain services enforce ownership, private-category visibility, gameplay rules, and payment state. TypeORM entities deliberately map to the existing Django tables instead of introducing parallel NestJS tables.
+NestJS is the application runtime. Controllers keep the existing frontend contract and validate writes with DTOs. Domain services enforce ownership, private-category visibility, turn-based gameplay rules, and payment state. TypeORM entities map to the existing Django-compatible tables instead of creating parallel application tables.
 
 ```text
 Next.js client
     -> NestJS controllers + validated DTOs
         -> auth/content/gameplay/payment services
-            -> TypeORM compatibility mappings
-                -> existing Django PostgreSQL schema
+            -> TypeORM entities and migrations
+                -> PostgreSQL (Django-compatible schema)
 ```
 
 Compatibility-sensitive choices include:
@@ -31,6 +31,7 @@ Compatibility-sensitive choices include:
 - Django PBKDF2 hashes and 40-character DRF tokens remain readable.
 - Password changes and resets rotate the database token; `POST /api/auth/logout` revokes it.
 - Custom private or unapproved categories are visible only to their owner or staff.
+- Gameplay is turn-based: each game receives a persisted question board, and round completion accepts only questions from that board.
 - Lemon Squeezy signatures are required in every environment. Successfully processed webhook bodies are fingerprinted transactionally so an exact replay has no second effect.
 - Authentication throttles are stored in PostgreSQL, making them durable across restarts and application instances. A dedicated Redis throttler store is the recommended next step at high request volume.
 
