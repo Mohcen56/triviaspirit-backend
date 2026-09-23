@@ -1,4 +1,5 @@
-import session, { SessionData } from 'express-session';
+import * as session from 'express-session';
+import type { SessionData } from 'express-session';
 import { DataSource } from 'typeorm';
 import { AdminSessionEntity } from '../database/entities';
 

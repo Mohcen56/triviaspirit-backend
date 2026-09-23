@@ -13,7 +13,8 @@ import type {
 import { ConfigService } from '@nestjs/config';
 import { ValidationError, validate } from 'class-validator';
 import { Router } from 'express';
-import session, { Session } from 'express-session';
+import * as session from 'express-session';
+import type { Session } from 'express-session';
 import { resolve } from 'node:path';
 import { DataSource, In, Raw } from 'typeorm';
 import { PasswordService } from '../auth/password.service';
