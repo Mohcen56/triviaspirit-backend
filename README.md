@@ -132,7 +132,7 @@ Then start the frontend and open <http://localhost:3000>.
 
 This repository is ready for a Railway web service. It uses the platform-provided `PORT` and exposes `GET /health` for the deployment health check.
 
-1. Create a Railway project and choose **Deploy from GitHub repo**. Select this repository, then set the service's **Root Directory** to `nestjs-backend`.
+1. Create a Railway project and choose **Deploy from GitHub repo**. Select this repository and keep the service's **Root Directory** at the repository root.
 2. In the service settings, set these commands:
 
    ```text

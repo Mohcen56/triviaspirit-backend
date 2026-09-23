@@ -74,7 +74,6 @@ export function validateEnvironment(environment: Environment): Environment {
     'LEMONSQUEEZY_STORE_ID',
     'LEMONSQUEEZY_VARIANT_ID',
     'LEMONSQUEEZY_WEBHOOK_SECRET',
-    'LEMONSQUEEZY_TEST_MODE',
   ];
   validateCompleteIntegration(environment, paymentNames, 'Lemon Squeezy');
   validateBoolean(environment, 'LEMONSQUEEZY_TEST_MODE');

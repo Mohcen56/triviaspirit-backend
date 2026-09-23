@@ -44,7 +44,7 @@ const questionUploadOptions = {
   limits: {
     fileSize: 5 * 1024 * 1024,
     files: 2,
-    parts: 12,
+    parts: 16,
     fieldSize: 1024 * 1024,
   },
 };

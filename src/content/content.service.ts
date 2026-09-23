@@ -308,7 +308,7 @@ export class ContentService {
     );
     if (unknown.length) {
       throw new BadRequestException({
-        detail: `Unknown query parameter(s): ${unknown.join(', ')}. Only 'category_id' is permitted.`,
+        detail: `Unknown query parameter(s): ${unknown.join(', ')}. Only 'category_id', 'limit', and 'offset' are permitted.`,
       });
     }
     const categoryId = integerId(
@@ -425,11 +425,13 @@ export class ContentService {
         false,
         uploadedKeys,
       );
-      await this.questions.save(question);
-      if (!user.isStaff && category.isApproved) {
-        category.isApproved = false;
-        await this.categories.save(category);
-      }
+      await this.questions.manager.transaction(async (manager) => {
+        await manager.getRepository(QuestionEntity).save(question);
+        if (!user.isStaff && category.isApproved) {
+          category.isApproved = false;
+          await manager.getRepository(CategoryEntity).save(category);
+        }
+      });
     } catch (error) {
       await this.removeImagesBestEffort(uploadedKeys);
       throw error;
@@ -460,7 +462,13 @@ export class ContentService {
         true,
         uploadedKeys,
       );
-      await this.questions.save(question);
+      await this.questions.manager.transaction(async (manager) => {
+        await manager.getRepository(QuestionEntity).save(question);
+        if (!user.isStaff && question.category.isApproved) {
+          question.category.isApproved = false;
+          await manager.getRepository(CategoryEntity).save(question.category);
+        }
+      });
       await this.removeImagesBestEffort(
         previousImages.filter(
           (key): key is string =>
@@ -469,10 +477,6 @@ export class ContentService {
             key !== question.answerImage,
         ),
       );
-      if (!user.isStaff && question.category.isApproved) {
-        question.category.isApproved = false;
-        await this.categories.save(question.category);
-      }
     } catch (error) {
       await this.removeImagesBestEffort(uploadedKeys);
       throw error;

@@ -55,9 +55,10 @@ integrationDescribe('TriviaSpirit API compatibility (e2e)', () => {
     process.env.APP_SECRET = 'integration-test-application-secret';
     process.env.PBKDF2_ITERATIONS = '1000';
     process.env.LEMONSQUEEZY_WEBHOOK_SECRET = 'integration-webhook-secret';
-    process.env.LEMONSQUEEZY_API_KEY = '';
-    process.env.LEMONSQUEEZY_STORE_ID = '';
+    process.env.LEMONSQUEEZY_API_KEY = 'integration-test-api-key';
+    process.env.LEMONSQUEEZY_STORE_ID = 'integration-test-store';
     process.env.LEMONSQUEEZY_VARIANT_ID = 'variant-1';
+    process.env.LEMONSQUEEZY_TEST_MODE = 'true';
 
     const { AppModule } = await import('../src/app.module');
     const moduleRef = await Test.createTestingModule({

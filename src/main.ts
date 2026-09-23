@@ -38,7 +38,10 @@ async function bootstrap() {
     }
     next();
   });
-  const trustProxyValue = config.get<string>('TRUST_PROXY', 'false').trim();
+  const trustProxyValue = config
+    .get<string>('TRUST_PROXY', 'false')
+    .trim()
+    .toLowerCase();
   const trustProxy =
     trustProxyValue === 'true'
       ? true
@@ -46,7 +49,7 @@ async function bootstrap() {
         ? false
         : /^\d+$/.test(trustProxyValue)
           ? Number(trustProxyValue)
-          : trustProxyValue;
+          : false;
   app.set('trust proxy', trustProxy);
   app.useStaticAssets(
     resolve(process.cwd(), config.get<string>('MEDIA_ROOT', 'media')),

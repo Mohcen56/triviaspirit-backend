@@ -54,7 +54,12 @@ export class PaymentsService implements OnModuleInit {
     }
     if (
       configuredCount === paymentConfiguration.length &&
-      !this.config.get<string>('LEMONSQUEEZY_TEST_MODE')
+      !['true', 'false'].includes(
+        this.config
+          .get<string>('LEMONSQUEEZY_TEST_MODE', '')
+          .trim()
+          .toLowerCase(),
+      )
     ) {
       throw new Error(
         'LEMONSQUEEZY_TEST_MODE must be set to true or false when payments are configured',
@@ -317,9 +322,15 @@ export class PaymentsService implements OnModuleInit {
     ) {
       return;
     }
-    payment.status = 'refunded';
     payment.webhookData = payload as unknown as Record<string, unknown>;
     payment.providerUpdatedAt = providerUpdatedAt;
+    const status = stringValue(attributes.status).toLowerCase();
+    const refunded = attributes.refunded === true;
+    if (status !== 'refunded' && !refunded) {
+      await paymentRepository.save(payment);
+      return;
+    }
+    payment.status = 'refunded';
     await paymentRepository.save(payment);
     await this.recomputePremium(user.id, manager);
   }
@@ -489,10 +500,6 @@ export class PaymentsService implements OnModuleInit {
   ) {
     this.validateProviderTimestamp(attributes);
     this.validateVariant(storedVariantId);
-    const status = stringValue(attributes.status).toLowerCase();
-    if (status && status !== 'refunded') {
-      throw new BadRequestException({ error: 'Invalid refund status' });
-    }
     const item = (attributes.first_order_item || {}) as Record<string, unknown>;
     const actualVariant = stringValue(attributes.variant_id || item.variant_id);
     if (actualVariant) this.validateVariant(actualVariant);
