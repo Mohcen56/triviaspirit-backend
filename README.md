@@ -184,7 +184,10 @@ CLOUDFLARE_R2_BUCKET_ENDPOINT=
 CLOUDFLARE_R2_CUSTOM_DOMAIN=
 ```
 
-The service validates uploads, resizes large images, and stores them as WebP.
+The service validates uploads, resizes large images, and stores them as WebP. R2
+objects use the shared `media/` prefix, so a question image is stored at
+`media/questions/<id>.webp` and is served from
+`https://your-r2-domain.com/media/questions/<id>.webp`.
 
 ## Optional integrations
 
