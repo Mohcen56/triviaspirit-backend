@@ -1,212 +1,232 @@
-# TriviaSpirit NestJS Backend
+# TriviaSpirit API
 
+![NestJS](https://img.shields.io/badge/NestJS-E0234E?logo=nestjs&logoColor=white)
+![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16+-4169E1?logo=postgresql&logoColor=white)
 [![CI](https://github.com/Mohcen56/triviaspirit-backend/actions/workflows/ci.yml/badge.svg)](https://github.com/Mohcen56/triviaspirit-backend/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/Mohcen56/triviaspirit-backend/branch/main/graph/badge.svg)](https://codecov.io/gh/Mohcen56/triviaspirit-backend)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-[Production API health](https://api.triviaspirit.com/health) | [Local API health](http://localhost:8000/health)
+> A production-minded NestJS and TypeScript API for a turn-based trivia platform.
 
-TriviaSpirit is a NestJS and TypeScript backend for a turn-based trivia game. It provides the REST API used by the frontend, persists data in PostgreSQL, and preserves compatibility with the existing Django database, routes, response shapes, PBKDF2 passwords, and DRF authentication tokens.
+[Live API health](https://api.triviaspirit.com/health) · [NestJS source on GitHub](https://github.com/Mohcen56/triviaspirit-backend) · [Local health check](http://localhost:8000/health)
 
-- `/api/auth/*` - email/password auth, Google OAuth, profiles, avatars, logout, and password reset
-- `/api/content/*` - collections, official/custom categories, questions, saves, and likes
-- `/api/gameplay/*` - turn-based games, persisted question boards, round completion, stats, and history
-- `/api/payments/*` - Lemon Squeezy checkout, signed webhooks, and payment history
+## At a glance
 
-## Backend architecture
+TriviaSpirit is a multiplayer trivia product with authentication, user-generated content, turn-based games, subscriptions, media uploads, and an admin dashboard.
 
-NestJS is the application runtime. Controllers keep the existing frontend contract and validate writes with DTOs. Domain services enforce ownership, private-category visibility, turn-based gameplay rules, and payment state. TypeORM entities map to the existing Django-compatible tables instead of creating parallel application tables.
+This repository is the current backend: a modular NestJS application that serves the frontend, uses PostgreSQL as its source of truth, and keeps compatibility with the existing production data model.
+
+### What this project demonstrates
+
+- Designing a modular REST API with NestJS, TypeScript, DTO validation, guards, interceptors, and domain services.
+- Migrating a live backend from Django while preserving users, tokens, database tables, routes, and response contracts.
+- Building secure authentication with Django-compatible PBKDF2 passwords, token rotation, logout revocation, password reset, Google OAuth, and throttling.
+- Implementing server-controlled turn-based gameplay with persisted question boards and validated round completion.
+- Handling signed payment webhooks idempotently, including replay protection and entitlement updates.
+- Shipping operational discipline: explicit migrations, production configuration validation, health/readiness endpoints, CI, and regression tests.
+
+## Project status and the Django showcase
+
+The public product showcase and some older screenshots describe the **legacy Django version** of TriviaSpirit. That showcase is useful for seeing the product concept and UI, but it is not the current backend implementation and should not be used to evaluate the API architecture.
+
+The current backend is this repository: **[TriviaSpirit NestJS Backend](https://github.com/Mohcen56/triviaspirit-backend)**. Recruiters can verify the implementation directly in the source, CI workflow, tests, migrations, and live health endpoint above.
+
+The frontend is maintained separately and can be pointed at this API with `BACKEND_API_URL` and `NEXT_PUBLIC_API_BASE_URL`.
+
+## Architecture
 
 ```text
-Next.js client
-    -> NestJS controllers + validated DTOs
-        -> auth/content/gameplay/payment services
-            -> TypeORM entities and migrations
-                -> PostgreSQL (Django-compatible schema)
+Frontend
+   │
+   ▼
+NestJS controllers
+   │  DTO validation · authentication · throttling · upload limits
+   ▼
+Domain services
+   │  auth · content · gameplay · payments · media
+   ▼
+TypeORM entities and versioned migrations
+   │
+   ├── PostgreSQL / Neon
+   ├── Cloudflare R2 media storage
+   └── Lemon Squeezy · Google OAuth · ZeptoMail
 ```
 
-Compatibility-sensitive choices include:
+The application is organized by domain under [`src/`](src/):
 
-- `auth_user`, `authentication_userprofile`, and `authtoken_token` retain their Django names and field shapes.
-- Django PBKDF2 hashes and 40-character DRF tokens remain readable.
-- Password changes and resets rotate the database token; `POST /api/auth/logout` revokes it.
-- Custom private or unapproved categories are visible only to their owner or staff.
-- Gameplay is turn-based: each game receives a persisted question board, and round completion accepts only questions from that board.
-- Lemon Squeezy signatures are required in every environment. Successfully processed webhook bodies are fingerprinted transactionally so an exact replay has no second effect.
-- Authentication throttles are stored in PostgreSQL, making them durable across restarts and application instances. A dedicated Redis throttler store is the recommended next step at high request volume.
+| Area | Responsibility |
+| --- | --- |
+| [`auth`](src/auth) | Registration, login, Google OAuth, profiles, avatars, password reset, logout |
+| [`content`](src/content) | Collections, categories, questions, saves, likes, and ownership rules |
+| [`gameplay`](src/gameplay) | Turn-based games, question boards, rounds, stats, and history |
+| [`payments`](src/payments) | Checkout, signed webhooks, replay protection, and payment history |
+| [`media`](src/media) | Validated image processing, local storage, and Cloudflare R2 storage |
+| [`database`](src/database) | Django-compatible entities, data-source configuration, and migrations |
+| [`admin`](src/admin) | AdminJS dashboard with PostgreSQL-backed sessions |
 
-## Requirements
+## API surface
+
+| Prefix | Features |
+| --- | --- |
+| `/api/auth/*` | Authentication, profiles, avatars, password changes, and password reset |
+| `/api/content/*` | Collections, official/custom categories, questions, saves, and likes |
+| `/api/gameplay/*` | Games, available questions, turn completion, stats, and history |
+| `/api/payments/*` | Checkout, signed webhooks, and payment history |
+| `/health` | Liveness check for deployment platforms |
+| `/ready` | Database-backed readiness check |
+| `/admin` | Protected AdminJS dashboard for staff and superusers |
+
+## Engineering highlights
+
+### Compatibility-first migration
+
+NestJS reads the existing PostgreSQL database instead of creating a parallel schema. The compatibility layer preserves:
+
+- Django table names and relationships.
+- Django PBKDF2 password hashes.
+- 40-character DRF authentication tokens.
+- Existing frontend routes and response shapes.
+- Existing users, categories, games, and payment history.
+
+NestJS-owned changes are isolated in explicit migrations under [`src/database/migrations`](src/database/migrations). Production uses `DATABASE_SYNCHRONIZE=false`, so schema changes are reviewable and repeatable.
+
+### Secure authentication
+
+- Strong production secret validation.
+- Case-insensitive email uniqueness.
+- Password and token rotation after password changes and resets.
+- Explicit logout token revocation.
+- Google identity linking with provider-ordering safeguards.
+- PostgreSQL-backed authentication throttling that survives restarts.
+- HttpOnly admin sessions stored in PostgreSQL rather than process memory.
+
+### Turn-based game integrity
+
+Gameplay is explicitly turn-based. Each game receives a persisted question board, and round completion accepts only questions from that board. This prevents clients from submitting arbitrary question IDs and keeps the game state verifiable on the server.
+
+### Reliable payments
+
+- Lemon Squeezy webhook signatures are checked in every environment.
+- Webhook bodies are fingerprinted transactionally for exact replay protection.
+- Payment and entitlement updates are handled with per-user locking.
+- Provider amounts are stored with integer minor-unit precision for reliable billing logic.
+
+### Media pipeline
+
+Uploads are size-limited, MIME-validated, processed with Sharp, resized, converted to WebP, and cleaned up after failed requests. R2 objects follow the shared Django-compatible layout:
+
+```text
+media/avatars/<id>.webp
+media/categories/<id>.webp
+media/questions/<id>.webp
+media/answers/<id>.webp
+```
+
+The database stores the logical key, while the API returns the public media URL.
+
+## Run locally
+
+### Requirements
 
 - Node.js 20 or newer
 - npm
-- An accessible PostgreSQL database (the project uses Neon)
+- PostgreSQL or a Neon PostgreSQL database
 
-## Quick start with Neon
-
-Create your local environment file from the committed template:
+### Setup
 
 ```powershell
 Copy-Item .env.example .env
+npm ci
 ```
 
-Configure `.env`:
+Configure at least these values in `.env`:
 
 ```env
-DATABASE_URL=your-neon-postgresql-url
+NODE_ENV=development
+DATABASE_URL=your-postgresql-url
 DATABASE_SSL=true
 DATABASE_SYNCHRONIZE=false
 DATABASE_MIGRATIONS_RUN=false
 APP_SECRET=a-long-random-secret
+FRONTEND_URL=http://localhost:3000
+CORS_ALLOWED_ORIGINS=http://localhost:3000
 ```
 
-Never commit `.env`; it is intentionally ignored by Git. Install and start the API:
+Run the migrations and start the API:
 
 ```powershell
-npm ci
 npm run migration:run
 npm run start:dev
 ```
 
-Check the API at <http://localhost:8000/health>.
+Verify the server at <http://localhost:8000/health>. The AdminJS dashboard is available at <http://localhost:8000/admin> for an active staff or superuser account.
 
-Keep `DATABASE_SYNCHRONIZE=false` for the existing database. Never enable schema synchronization against production.
+Never commit `.env`, enable `DATABASE_SYNCHRONIZE` against production, or paste production credentials into issues, logs, or documentation.
 
-## Versioned database migrations
+## Database migrations
 
-Run migrations as a separate deployment step before starting new application instances:
+Inspect and run migrations explicitly:
 
 ```powershell
 npm run migration:show
 npm run migration:run
 ```
 
-`DATABASE_MIGRATIONS_RUN=false` is the safe default so multiple replicas do not race to migrate. Generate future changes with `npm run migration:generate`, inspect the SQL, test it against a recent backup, and commit the migration with its entity change. Use `npm run migration:revert` only after reviewing the migration's `down` method and the affected production data.
+The safe production pattern is:
 
-The NestJS-owned migrations add the durable authentication throttle/replay tables,
-Google identity and provider-ordering columns, the case-insensitive email and
-played-question uniqueness safeguards, admin session storage, and the payment
-minor-unit column. Existing Django tables are treated as the baseline and are not
-recreated. The email and played-question migrations deliberately preflight existing
-duplicates and must be reviewed against a backup before deployment.
+1. Back up the database.
+2. Review the generated SQL and the migration `down` method.
+3. Run migrations as a deployment step.
+4. Start the new application process only after migrations succeed.
 
-## Admin dashboard
+`DATABASE_MIGRATIONS_RUN=false` is intentional: it prevents multiple application instances from racing to migrate at startup.
 
-AdminJS is available at <http://localhost:8000/admin>. Sign in with an active user whose `is_staff` or `is_superuser` flag is enabled. It uses the same email and Django-compatible password as the API.
+## Production deployment
 
-Set a dedicated session secret in production. If omitted, the dashboard falls back to `APP_SECRET`:
+The repository includes a [`Procfile`](Procfile) for Heroku:
+
+```text
+release: npm run migration:run:compiled
+web: npm run start:prod
+```
+
+Set production values in the hosting provider’s environment settings, not in Git:
 
 ```env
-ADMIN_COOKIE_SECRET=a-long-random-admin-session-secret
+NODE_ENV=production
+APP_SECRET=<long-random-secret>
+ADMIN_COOKIE_SECRET=<different-long-random-secret>
+DATABASE_URL=<production-postgresql-url>
+DATABASE_SSL=true
+DATABASE_SSL_REJECT_UNAUTHORIZED=true
+DATABASE_SYNCHRONIZE=false
+DATABASE_MIGRATIONS_RUN=false
+FRONTEND_URL=https://your-frontend-domain.com
+CORS_ALLOWED_ORIGINS=https://your-frontend-domain.com
+TRUST_PROXY=1
 ```
 
-Authentication tokens are excluded from the dashboard. Engagement, gameplay, payment, and subscription records are read-only.
-
-## Use the existing Django database
-
-Point `DATABASE_URL` at the same PostgreSQL database used by Django, keep `DATABASE_SYNCHRONIZE=false`, back it up, and run the versioned migrations. Existing users, tokens, categories, games, and payment history then remain available without a data copy. Before changing historical payment amounts, audit whether the existing `amount` values are provider minor units or API major units; the application records new webhook amounts in both `amount` (major units) and `amount_minor` (integer minor units).
-
-Production build:
-
-```powershell
-npm ci
-npm run migration:run
-npm run build
-npm run start:prod
-```
-
-## Run with the frontend
-
-Start this repository with `npm run start:dev`. In the separate frontend repository, set:
+For R2-backed media, configure all five variables together:
 
 ```env
-# Used by Next.js server code. It does not reach the browser bundle.
-BACKEND_API_URL=http://127.0.0.1:8000
-
-# Used by the browser only to turn relative media paths into public URLs.
-NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000
-NEXT_PUBLIC_SITE_URL=http://localhost:3000
+CLOUDFLARE_R2_BUCKET=<bucket-name>
+CLOUDFLARE_R2_ACCESS_KEY=<access-key>
+CLOUDFLARE_R2_SECRET_KEY=<secret-key>
+CLOUDFLARE_R2_BUCKET_ENDPOINT=https://<account-id>.r2.cloudflarestorage.com
+CLOUDFLARE_R2_CUSTOM_DOMAIN=https://<public-media-domain>
 ```
 
-Then start the frontend and open <http://localhost:3000>.
+`CLOUDFLARE_R2_CUSTOM_DOMAIN` must be the public domain only. Do not append the bucket name or `/media`; the application adds the `media/` prefix when building object paths.
 
-## Deploy the API to Railway
+After deployment, verify:
 
-This repository is ready for a Railway web service. It uses the platform-provided `PORT` and exposes `GET /health` for the deployment health check.
-
-1. Create a Railway project and choose **Deploy from GitHub repo**. Select this repository and keep the service's **Root Directory** at the repository root.
-2. In the service settings, set these commands:
-
-   ```text
-   Build Command:      npm ci && npm run build
-   Pre-Deploy Command: npm run migration:run
-   Start Command:      npm run start:prod
-   Healthcheck Path:   /health
-   ```
-
-   The migration runs before the new server starts, so a failed migration prevents a partial application deploy. Do not enable `DATABASE_MIGRATIONS_RUN` as well; one migration mechanism is enough.
-3. Add the production variables from `.env.example` in Railway. At minimum, configure:
-
-   ```env
-   NODE_ENV=production
-   DATABASE_URL=your-production-postgresql-url
-   DATABASE_SSL=true
-   DATABASE_SYNCHRONIZE=false
-   DATABASE_MIGRATIONS_RUN=false
-   APP_SECRET=a-long-random-secret
-   ADMIN_COOKIE_SECRET=a-different-long-random-secret
-   FRONTEND_URL=https://www.your-frontend-domain.com
-   CORS_ALLOWED_ORIGINS=https://www.your-frontend-domain.com
-   MEDIA_PUBLIC_URL=https://api.your-api-domain.com/media
-   ```
-
-   Also copy any integrations you use: Cloudflare R2, Google OAuth, Lemon Squeezy, and ZeptoMail. Keep all secrets in Railway variables—never in Git.
-4. Generate a Railway public domain or attach your API domain. Verify `https://your-api-domain.com/health` returns `200` before pointing the frontend at it.
-5. In the frontend deployment variables, set both values to that public API origin and redeploy the frontend:
-
-   ```env
-   BACKEND_API_URL=https://your-api-domain.com
-   NEXT_PUBLIC_API_BASE_URL=https://your-api-domain.com
-   ```
-
-6. Update third-party callback URLs: Lemon Squeezy webhook to `https://your-api-domain.com/api/payments/webhook/`; Google OAuth's browser origin and redirect settings to your frontend domain.
-
-For local media, Railway containers are ephemeral. Use Cloudflare R2 in production, or attach durable storage and set `MEDIA_ROOT` plus `MEDIA_PUBLIC_URL` accordingly.
-
-## Media storage
-
-Uploads use `media/` in local development. For Cloudflare R2, configure all values below:
-
-```env
-CLOUDFLARE_R2_BUCKET=
-CLOUDFLARE_R2_ACCESS_KEY=
-CLOUDFLARE_R2_SECRET_KEY=
-CLOUDFLARE_R2_BUCKET_ENDPOINT=
-CLOUDFLARE_R2_CUSTOM_DOMAIN=
+```text
+GET https://your-api-domain.com/health  -> 200
+GET https://your-api-domain.com/ready   -> 200 when PostgreSQL is reachable
 ```
 
-The service validates uploads, resizes large images, and stores them as WebP. R2
-objects use the shared `media/` prefix, so a question image is stored at
-`media/questions/<id>.webp` and is served from
-`https://your-r2-domain.com/media/questions/<id>.webp`.
-
-## Optional integrations
-
-Google login requires `GOOGLE_OAUTH_CLIENT_ID`.
-
-Lemon Squeezy checkout and webhooks require:
-
-```env
-LEMONSQUEEZY_API_KEY=
-LEMONSQUEEZY_STORE_ID=
-LEMONSQUEEZY_WEBHOOK_SECRET=
-LEMONSQUEEZY_VARIANT_ID=
-```
-
-Set the webhook URL to `/api/payments/webhook/`. `LEMONSQUEEZY_WEBHOOK_SECRET` is mandatory whenever payment API settings are present, and every webhook signature is checked regardless of `NODE_ENV`.
-
-ZeptoMail password-reset email requires `ZEPTOMAIL_API_KEY`, `ZEPTOMAIL_API_ENDPOINT`, and `DEFAULT_FROM_EMAIL`. Without an API key, development mode logs the reset URL in the backend terminal.
-
-## Verification
+## Testing and quality checks
 
 ```powershell
 npm run format:check
@@ -216,23 +236,28 @@ npm test
 npm run test:e2e
 ```
 
-Integration tests require an isolated PostgreSQL database:
+The test suite covers authentication compatibility, DTO validation, ownership and visibility rules, turn-based gameplay, token rotation, signed webhook handling and replay protection, media URL behavior, and durable throttling.
+
+End-to-end tests use an isolated PostgreSQL database:
 
 ```powershell
 $env:TEST_DATABASE_URL='postgresql://postgres:postgres@localhost:5432/triviaspirit_test'
 npm run test:e2e
 ```
 
-The suite covers registration/login/authentication, Django password and token compatibility, ownership and private visibility, game creation and round completion, token rotation/logout, webhook signatures and replay handling, DTO validation, and durable throttling. GitHub Actions provisions PostgreSQL and runs formatting, linting, build, unit coverage, integration tests, and a production dependency audit.
+GitHub Actions runs formatting, linting, build checks, unit tests, integration tests, and a production dependency audit.
 
-## Common problems
+## Selected design decisions
 
-- `DATABASE_URL must be configured`: create `.env` from `.env.example`.
-- PostgreSQL connection refused: confirm the database is reachable and the URL is correct.
-- Existing hosted database rejects the connection: set `DATABASE_SSL=true`.
-- Frontend returns `Proxy request failed`: confirm the API is running on port 8000 and `NEXT_PUBLIC_API_BASE_URL` points to it.
-- Existing R2 images do not load: set `CLOUDFLARE_R2_CUSTOM_DOMAIN` to the public bucket or custom-domain base URL.
-- Authentication requests fail because `security_auth_rate_limit` is missing: run `npm run migration:run` before starting the new build.
+| Decision | Reason |
+| --- | --- |
+| PostgreSQL migrations instead of synchronize | Reviewable, repeatable schema changes in production |
+| Server-controlled question boards | Prevents clients from submitting arbitrary gameplay questions |
+| Transactional webhook fingerprints | Makes exact webhook retries harmless |
+| Integer payment minor units | Avoids floating-point billing errors |
+| R2 object storage | Prevents uploaded media from disappearing on ephemeral dynos |
+| PostgreSQL-backed throttling and admin sessions | Keeps security state durable across restarts and instances |
+| Compatibility with Django data | Enables an incremental migration without a destructive rewrite |
 
 ## License
 
