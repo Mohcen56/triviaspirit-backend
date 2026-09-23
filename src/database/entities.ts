@@ -42,11 +42,26 @@ export class UserEntity extends BaseEntity {
   @Column({ type: 'varchar', length: 254, default: '' })
   email: string;
 
+  @Index('auth_user_google_subject_unique', {
+    unique: true,
+    where: '"google_subject" IS NOT NULL',
+  })
+  @Column({
+    name: 'google_subject',
+    type: 'varchar',
+    length: 255,
+    nullable: true,
+  })
+  googleSubject: string | null;
+
   @Column({ name: 'is_staff', default: false })
   isStaff: boolean;
 
   @Column({ name: 'is_active', default: true })
   isActive: boolean;
+
+  @Column({ name: 'session_version', type: 'integer', default: 0 })
+  sessionVersion: number;
 
   @CreateDateColumn({ name: 'date_joined', type: 'timestamptz' })
   dateJoined: Date;
@@ -305,6 +320,9 @@ export class GameEntity extends BaseEntity {
   @Column({ type: 'jsonb', default: () => "'[]'::jsonb" })
   teams: Array<Record<string, unknown>>;
 
+  @Column({ name: 'board_question_ids', type: 'jsonb', nullable: true })
+  boardQuestionIds: number[] | null;
+
   @CreateDateColumn({ name: 'date_played', type: 'timestamptz' })
   datePlayed: Date;
 
@@ -339,6 +357,7 @@ export class GameCategoryEntity extends BaseEntity {
 }
 
 @Entity('gameplay_playedquestion')
+@Unique(['gameId', 'questionId'])
 export class PlayedQuestionEntity extends BaseEntity {
   @PrimaryGeneratedColumn({ type: 'bigint' })
   id: number;
@@ -381,6 +400,9 @@ export class PaymentEntity extends BaseEntity {
   @Column({ type: 'numeric', precision: 10, scale: 2 })
   amount: string;
 
+  @Column({ name: 'amount_minor', type: 'integer', nullable: true })
+  amountMinor: number | null;
+
   @Column({ type: 'varchar', length: 3, default: 'USD' })
   currency: string;
 
@@ -404,6 +426,9 @@ export class PaymentEntity extends BaseEntity {
 
   @Column({ name: 'webhook_data', type: 'jsonb', nullable: true })
   webhookData: Record<string, unknown> | null;
+
+  @Column({ name: 'provider_updated_at', type: 'timestamptz', nullable: true })
+  providerUpdatedAt: Date | null;
 }
 
 @Entity('payments_subscription')
@@ -455,6 +480,9 @@ export class SubscriptionEntity extends BaseEntity {
 
   @UpdateDateColumn({ name: 'updated_at', type: 'timestamptz' })
   updatedAt: Date;
+
+  @Column({ name: 'provider_updated_at', type: 'timestamptz', nullable: true })
+  providerUpdatedAt: Date | null;
 }
 
 @Entity('payments_webhook_event')
@@ -496,6 +524,19 @@ export class AuthRateLimitEntity extends BaseEntity {
   updatedAt: Date;
 }
 
+@Entity('security_admin_session')
+@Index(['expiresAt'])
+export class AdminSessionEntity {
+  @PrimaryColumn({ name: 'session_id', type: 'varchar', length: 255 })
+  sessionId: string;
+
+  @Column({ type: 'text' })
+  data: string;
+
+  @Column({ name: 'expires_at', type: 'timestamptz' })
+  expiresAt: Date;
+}
+
 export const ENTITIES = [
   UserEntity,
   UserProfileEntity,
@@ -512,4 +553,5 @@ export const ENTITIES = [
   SubscriptionEntity,
   PaymentWebhookEventEntity,
   AuthRateLimitEntity,
+  AdminSessionEntity,
 ];

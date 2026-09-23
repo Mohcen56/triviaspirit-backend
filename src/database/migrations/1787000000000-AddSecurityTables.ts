@@ -5,7 +5,7 @@ export class AddSecurityTables1787000000000 implements MigrationInterface {
 
   async up(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(`
-      CREATE TABLE "security_auth_rate_limit" (
+      CREATE TABLE IF NOT EXISTS "security_auth_rate_limit" (
         "rate_key" varchar(255) NOT NULL,
         "total_hits" integer NOT NULL,
         "expires_at" timestamptz NOT NULL,
@@ -15,11 +15,11 @@ export class AddSecurityTables1787000000000 implements MigrationInterface {
       )
     `);
     await queryRunner.query(`
-      CREATE INDEX "IDX_security_auth_rate_limit_expires_at"
+      CREATE INDEX IF NOT EXISTS "IDX_security_auth_rate_limit_expires_at"
       ON "security_auth_rate_limit" ("expires_at")
     `);
     await queryRunner.query(`
-      CREATE TABLE "payments_webhook_event" (
+      CREATE TABLE IF NOT EXISTS "payments_webhook_event" (
         "id" bigserial NOT NULL,
         "fingerprint" varchar(64) NOT NULL,
         "event_name" varchar(100) NOT NULL,
@@ -33,10 +33,10 @@ export class AddSecurityTables1787000000000 implements MigrationInterface {
   }
 
   async down(queryRunner: QueryRunner): Promise<void> {
-    await queryRunner.query('DROP TABLE "payments_webhook_event"');
+    await queryRunner.query('DROP TABLE IF EXISTS "payments_webhook_event"');
     await queryRunner.query(
-      'DROP INDEX "IDX_security_auth_rate_limit_expires_at"',
+      'DROP INDEX IF EXISTS "IDX_security_auth_rate_limit_expires_at"',
     );
-    await queryRunner.query('DROP TABLE "security_auth_rate_limit"');
+    await queryRunner.query('DROP TABLE IF EXISTS "security_auth_rate_limit"');
   }
 }

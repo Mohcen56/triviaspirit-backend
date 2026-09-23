@@ -2,10 +2,10 @@ import { Transform } from 'class-transformer';
 import {
   IsEmail,
   IsNotEmpty,
-  IsOptional,
   IsString,
   MaxLength,
   MinLength,
+  ValidateIf,
 } from 'class-validator';
 
 const normalizedEmail = ({ value }: { value: unknown }) =>
@@ -13,6 +13,8 @@ const normalizedEmail = ({ value }: { value: unknown }) =>
 
 const trimmed = ({ value }: { value: unknown }) =>
   typeof value === 'string' ? value.trim() : value;
+
+const isProvided = (_object: unknown, value: unknown) => value !== undefined;
 
 export class LoginDto {
   @Transform(normalizedEmail)
@@ -31,20 +33,20 @@ export class RegisterDto extends LoginDto {
   @MaxLength(128)
   declare password: string;
 
-  @IsOptional()
+  @ValidateIf(isProvided)
   @Transform(trimmed)
   @IsString()
   @MinLength(1)
   @MaxLength(150)
   username?: string;
 
-  @IsOptional()
+  @ValidateIf(isProvided)
   @Transform(trimmed)
   @IsString()
   @MaxLength(150)
   first_name?: string;
 
-  @IsOptional()
+  @ValidateIf(isProvided)
   @Transform(trimmed)
   @IsString()
   @MaxLength(150)
@@ -52,26 +54,26 @@ export class RegisterDto extends LoginDto {
 }
 
 export class UpdateProfileDto {
-  @IsOptional()
+  @ValidateIf(isProvided)
   @Transform(trimmed)
   @IsString()
   @MinLength(1)
   @MaxLength(150)
   username?: string;
 
-  @IsOptional()
+  @ValidateIf(isProvided)
   @Transform(normalizedEmail)
   @IsEmail()
   @MaxLength(254)
   email?: string;
 
-  @IsOptional()
+  @ValidateIf(isProvided)
   @Transform(trimmed)
   @IsString()
   @MaxLength(150)
   first_name?: string;
 
-  @IsOptional()
+  @ValidateIf(isProvided)
   @Transform(trimmed)
   @IsString()
   @MaxLength(150)
@@ -85,7 +87,7 @@ export class ChangePasswordDto {
   current_password: string;
 
   @IsString()
-  @MinLength(6)
+  @MinLength(8)
   @MaxLength(128)
   new_password: string;
 }

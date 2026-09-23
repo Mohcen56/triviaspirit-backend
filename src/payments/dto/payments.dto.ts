@@ -20,6 +20,7 @@ export class CheckoutDto {
 }
 
 export class WebhookMetaDto {
+  @IsDefined()
   @IsString()
   @MaxLength(100)
   event_name: string;
@@ -31,22 +32,26 @@ export class WebhookMetaDto {
 
 export class WebhookDataDto {
   @IsDefined()
-  id: string | number;
+  @IsString()
+  id: string;
 
   @IsOptional()
   @IsString()
   @MaxLength(100)
   type?: string;
 
+  @IsDefined()
   @IsObject()
   attributes: Record<string, unknown>;
 }
 
 export class PaymentWebhookDto {
+  @IsDefined()
   @ValidateNested()
   @Type(() => WebhookMetaDto)
   meta: WebhookMetaDto;
 
+  @IsDefined()
   @ValidateNested()
   @Type(() => WebhookDataDto)
   data: WebhookDataDto;

@@ -8,7 +8,7 @@ import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { OAuth2Client } from 'google-auth-library';
 import { randomBytes } from 'node:crypto';
-import { ILike, Not, Repository } from 'typeorm';
+import { Not, QueryFailedError, Raw, Repository } from 'typeorm';
 import {
   AuthTokenEntity,
   UserEntity,
@@ -25,6 +25,9 @@ import {
 } from './dto/auth.dto';
 import { MailService } from './mail.service';
 import { PasswordService } from './password.service';
+
+const DUMMY_PASSWORD_HASH =
+  'pbkdf2_sha256$870000$codex-dummy-salt$jFLkpJD6aciyBDCvFq/U5EoePW0a7BqfNsZAkOS6QYg=';
 
 @Injectable()
 export class AuthService {
@@ -44,15 +47,16 @@ export class AuthService {
   ) {}
 
   async login(dto: LoginDto) {
+    const email = normalizeEmail(dto.email);
     const user = await this.users.findOne({
-      where: { email: ILike(dto.email) },
+      where: { email: emailCondition(email) },
       relations: { profile: true },
     });
-    if (
-      !user ||
-      !(await this.passwords.verify(dto.password, user.password)) ||
-      !user.isActive
-    ) {
+    const passwordValid = await this.passwords.verify(
+      dto.password,
+      user?.password || DUMMY_PASSWORD_HASH,
+    );
+    if (!user || !passwordValid || !user.isActive) {
       throw new UnauthorizedException({ error: 'Invalid email or password' });
     }
     user.lastLogin = new Date();
@@ -64,8 +68,8 @@ export class AuthService {
   }
 
   async register(dto: RegisterDto) {
-    const email = dto.email.trim().toLowerCase();
-    if (await this.users.exists({ where: { email: ILike(email) } })) {
+    const email = normalizeEmail(dto.email);
+    if (await this.users.exists({ where: { email: emailCondition(email) } })) {
       throw new BadRequestException({ error: 'Email already exists' });
     }
 
@@ -76,32 +80,43 @@ export class AuthService {
     const username = await this.uniqueUsername(baseUsername);
     const password = await this.passwords.hash(dto.password);
 
-    const user = await this.users.manager.transaction(async (manager) => {
-      const created = await manager.save(
-        UserEntity,
-        manager.create(UserEntity, {
-          username,
-          email,
-          password,
-          firstName: dto.first_name || '',
-          lastName: dto.last_name || '',
-          isActive: true,
-          isStaff: false,
-          isSuperuser: false,
-        }),
-      );
-      created.profile = await manager.save(
-        UserProfileEntity,
-        manager.create(UserProfileEntity, {
-          userId: created.id,
-          avatar: null,
-          bio: '',
-          isPremium: false,
-          premiumExpiry: null,
-        }),
-      );
-      return created;
-    });
+    let user: UserEntity;
+    try {
+      user = await this.users.manager.transaction(async (manager) => {
+        const created = await manager.save(
+          UserEntity,
+          manager.create(UserEntity, {
+            username,
+            email,
+            password,
+            firstName: dto.first_name || '',
+            lastName: dto.last_name || '',
+            isActive: true,
+            isStaff: false,
+            isSuperuser: false,
+          }),
+        );
+        created.profile = await manager.save(
+          UserProfileEntity,
+          manager.create(UserProfileEntity, {
+            userId: created.id,
+            avatar: null,
+            bio: '',
+            isPremium: false,
+            premiumExpiry: null,
+          }),
+        );
+        return created;
+      });
+    } catch (error) {
+      if (isUniqueViolation(error, 'auth_user_email_ci_unique')) {
+        throw new BadRequestException({ error: 'Email already exists' });
+      }
+      if (isUniqueViolation(error, 'username')) {
+        throw new BadRequestException({ error: 'Username already exists' });
+      }
+      throw error;
+    }
 
     return {
       token: await this.getOrCreateToken(user.id),
@@ -126,7 +141,10 @@ export class AuthService {
     if (
       dto.email &&
       (await this.users.exists({
-        where: { email: ILike(dto.email), id: Not(userId) },
+        where: {
+          email: emailCondition(normalizeEmail(dto.email)),
+          id: Not(userId),
+        },
       }))
     ) {
       throw new BadRequestException({ error: 'Email already exists' });
@@ -135,7 +153,17 @@ export class AuthService {
     if (dto.email !== undefined) user.email = dto.email.trim().toLowerCase();
     if (dto.first_name !== undefined) user.firstName = dto.first_name;
     if (dto.last_name !== undefined) user.lastName = dto.last_name;
-    await this.users.save(user);
+    try {
+      await this.users.save(user);
+    } catch (error) {
+      if (isUniqueViolation(error, 'auth_user_email_ci_unique')) {
+        throw new BadRequestException({ error: 'Email already exists' });
+      }
+      if (isUniqueViolation(error, 'username')) {
+        throw new BadRequestException({ error: 'Username already exists' });
+      }
+      throw error;
+    }
     return {
       user: this.serializeUser(user),
       message: 'Profile updated successfully',
@@ -146,17 +174,37 @@ export class AuthService {
     if (!file)
       throw new BadRequestException({ error: 'No avatar file provided' });
     const stored = await this.media.storeImage(file, 'avatars', 5);
-    const user = await this.getUser(userId);
-    const profile =
-      user.profile ||
-      this.profiles.create({ userId, bio: '', isPremium: false });
-    profile.avatar = stored.key;
-    user.profile = await this.profiles.save(profile);
-    return {
-      user: this.serializeUser(user),
-      avatar_url: this.media.url(stored.key),
-      message: 'Avatar updated successfully',
-    };
+    let previousAvatar: string | null = null;
+    try {
+      const user = await this.getUser(userId);
+      const profile =
+        user.profile ||
+        this.profiles.create({ userId, bio: '', isPremium: false });
+      previousAvatar = profile.avatar;
+      profile.avatar = stored.key;
+      user.profile = await this.profiles.save(profile);
+      if (previousAvatar && previousAvatar !== stored.key) {
+        try {
+          await this.media.removeImages([previousAvatar]);
+        } catch (error) {
+          this.logger.warn(
+            `Failed to remove replaced avatar: ${String(error)}`,
+          );
+        }
+      }
+      return {
+        user: this.serializeUser(user),
+        avatar_url: this.media.url(stored.key),
+        message: 'Avatar updated successfully',
+      };
+    } catch (error) {
+      try {
+        await this.media.removeImages([stored.key]);
+      } catch (cleanupError) {
+        this.logger.warn(`Failed to clean up avatar: ${String(cleanupError)}`);
+      }
+      throw error;
+    }
   }
 
   async changePassword(userId: number, dto: ChangePasswordDto) {
@@ -167,6 +215,7 @@ export class AuthService {
     const password = await this.passwords.hash(dto.new_password);
     const token = await this.users.manager.transaction(async (manager) => {
       user.password = password;
+      user.sessionVersion = (user.sessionVersion || 0) + 1;
       await manager.save(UserEntity, user);
       return this.rotateToken(user.id, manager);
     });
@@ -178,51 +227,73 @@ export class AuthService {
     if (!clientId) throw new Error('GOOGLE_OAUTH_CLIENT_ID is not configured');
 
     let googleUser: {
+      sub?: string;
       email?: string;
+      email_verified?: boolean;
+      hd?: string;
       name?: string;
       given_name?: string;
       family_name?: string;
     };
     try {
-      if (dto.token.split('.').length === 3) {
-        const ticket = await new OAuth2Client(clientId).verifyIdToken({
-          idToken: dto.token,
-          audience: clientId,
-        });
-        googleUser = ticket.getPayload() || {};
-      } else {
-        const response = await fetch(
-          'https://www.googleapis.com/oauth2/v3/userinfo',
-          {
-            headers: { Authorization: `Bearer ${dto.token}` },
-          },
-        );
-        if (!response.ok) throw new Error('Invalid Google token');
-        googleUser = (await response.json()) as typeof googleUser;
-      }
+      const ticket = await new OAuth2Client(clientId).verifyIdToken({
+        idToken: dto.token,
+        audience: clientId,
+      });
+      googleUser = ticket.getPayload() || {};
     } catch {
       throw new UnauthorizedException({
         error: 'Invalid or expired Google token',
       });
     }
 
-    if (!googleUser.email)
+    if (
+      !googleUser.sub ||
+      !googleUser.email ||
+      googleUser.email_verified !== true
+    )
       throw new BadRequestException({ error: 'Email not provided by Google' });
+    const email = normalizeEmail(googleUser.email);
+    const isAuthoritativeEmail =
+      Boolean(googleUser.hd) ||
+      email.endsWith('@gmail.com') ||
+      email.endsWith('@googlemail.com');
     let user = await this.users.findOne({
-      where: { email: ILike(googleUser.email) },
+      where: { googleSubject: googleUser.sub },
       relations: { profile: true },
     });
+    if (!user) {
+      user = await this.users.findOne({
+        where: { email: emailCondition(email) },
+        relations: { profile: true },
+      });
+      if (
+        user &&
+        (!isAuthoritativeEmail ||
+          (user.googleSubject && user.googleSubject !== googleUser.sub))
+      ) {
+        throw new UnauthorizedException({
+          error: 'Sign in with your existing account before linking Google',
+        });
+      }
+    }
     const isNew = !user;
     if (!user) {
       const names = (googleUser.name || '').trim().split(/\s+/);
       const registered = await this.register({
-        email: googleUser.email,
+        email,
         password: randomBytes(32).toString('hex'),
-        username: googleUser.email.split('@')[0],
+        username: email.split('@')[0],
         first_name: googleUser.given_name || names[0] || '',
         last_name: googleUser.family_name || names.slice(1).join(' '),
       });
       user = await this.getUser(registered.user.id);
+    }
+    if (!user.isActive)
+      throw new UnauthorizedException({ error: 'Account is inactive' });
+    if (user.googleSubject !== googleUser.sub) {
+      user.googleSubject = googleUser.sub;
+      await this.users.save(user);
     }
     return {
       token: await this.getOrCreateToken(user.id),
@@ -232,9 +303,9 @@ export class AuthService {
   }
 
   async requestPasswordReset(email: string) {
-    const normalized = email.trim().toLowerCase();
+    const normalized = normalizeEmail(email);
     const user = await this.users.findOne({
-      where: { email: ILike(normalized) },
+      where: { email: emailCondition(normalized) },
     });
     if (user) {
       const uid = Buffer.from(String(user.id)).toString('base64url');
@@ -263,15 +334,19 @@ export class AuthService {
     } catch {
       throw new BadRequestException({ detail: 'Invalid link or user.' });
     }
-    const user = await this.users.findOneBy({ id: userId });
-    if (!user)
-      throw new BadRequestException({ detail: 'Invalid link or user.' });
-    if (!this.passwords.verifyResetToken(user.id, user.password, dto.token)) {
-      throw new BadRequestException({ detail: 'Invalid or expired token.' });
-    }
     const password = await this.passwords.hash(dto.new_password);
     await this.users.manager.transaction(async (manager) => {
+      const user = await manager.findOne(UserEntity, {
+        where: { id: userId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!user)
+        throw new BadRequestException({ detail: 'Invalid link or user.' });
+      if (!this.passwords.verifyResetToken(user.id, user.password, dto.token)) {
+        throw new BadRequestException({ detail: 'Invalid or expired token.' });
+      }
       user.password = password;
+      user.sessionVersion = (user.sessionVersion || 0) + 1;
       await manager.save(UserEntity, user);
       await this.rotateToken(user.id, manager);
     });
@@ -279,7 +354,10 @@ export class AuthService {
   }
 
   async logout(userId: number) {
-    await this.tokens.delete({ userId });
+    await this.users.manager.transaction(async (manager) => {
+      await manager.delete(AuthTokenEntity, { userId });
+      await manager.increment(UserEntity, { id: userId }, 'sessionVersion', 1);
+    });
     return { detail: 'Successfully logged out.' };
   }
 
@@ -324,8 +402,15 @@ export class AuthService {
     const existing = await this.tokens.findOneBy({ userId });
     if (existing) return existing.key;
     const key = randomBytes(20).toString('hex');
-    await this.tokens.save(this.tokens.create({ key, userId }));
-    return key;
+    try {
+      await this.tokens.insert({ key, userId });
+      return key;
+    } catch (error) {
+      if (!isUniqueViolation(error, 'user_id')) throw error;
+      const concurrent = await this.tokens.findOneBy({ userId });
+      if (!concurrent) throw error;
+      return concurrent.key;
+    }
   }
 
   private async rotateToken(
@@ -348,4 +433,28 @@ export class AuthService {
     }
     return candidate;
   }
+}
+
+function normalizeEmail(email: string): string {
+  return email.trim().toLowerCase();
+}
+
+function emailCondition(email: string) {
+  return Raw((column) => `LOWER(${column}) = :normalizedEmail`, {
+    normalizedEmail: email,
+  });
+}
+
+function isUniqueViolation(error: unknown, expected: string): boolean {
+  if (!(error instanceof QueryFailedError)) return false;
+  const driverError = error.driverError as {
+    code?: string;
+    constraint?: string;
+    detail?: string;
+  };
+  return (
+    driverError.code === '23505' &&
+    (driverError.constraint?.includes(expected) === true ||
+      driverError.detail?.includes(`(${expected})`) === true)
+  );
 }

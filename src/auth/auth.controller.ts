@@ -16,6 +16,8 @@ import { CurrentUser, TokenAuthGuard } from '../common/auth';
 import { AuthThrottlerGuard } from '../common/rate-limit';
 import { UserEntity } from '../database/entities';
 import { AuthService } from './auth.service';
+import { UploadCleanupInterceptor } from '../media/upload-cleanup.interceptor';
+import { uploadCleanup } from '../media/upload-options';
 import {
   ChangePasswordDto,
   GoogleOAuthDto,
@@ -81,7 +83,11 @@ export class AuthController {
   @Patch('profile/avatar')
   @UseGuards(TokenAuthGuard)
   @UseInterceptors(
-    FileInterceptor('avatar', { limits: { fileSize: 5 * 1024 * 1024 } }),
+    FileInterceptor('avatar', {
+      ...uploadCleanup,
+      limits: { fileSize: 5 * 1024 * 1024 },
+    }),
+    UploadCleanupInterceptor,
   )
   updateAvatar(
     @CurrentUser() user: UserEntity,

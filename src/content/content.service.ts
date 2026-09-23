@@ -2,12 +2,18 @@ import {
   BadRequestException,
   ForbiddenException,
   Injectable,
+  Logger,
   MethodNotAllowedException,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, IsNull, Not, Repository } from 'typeorm';
-import { integerId, paginated, stringValue } from '../common/utils';
+import { EntityManager, In, Not, Repository } from 'typeorm';
+import {
+  integerId,
+  paginated,
+  parsePagination,
+  stringValue,
+} from '../common/utils';
 import {
   CategoryEntity,
   CategoryLikeEntity,
@@ -28,11 +34,33 @@ import {
   UpdateCategoryDto,
   UpdateQuestionDto,
 } from './dto/content.dto';
+import {
+  collectIndexedQuestionFields,
+  parseQuestionJson,
+} from './question-input';
 
 type UploadMap = Map<string, Express.Multer.File>;
+type UploadInput =
+  Express.Multer.File[] | Record<string, Express.Multer.File[]>;
+
+type UserCategoryStats = {
+  questionsCount: number;
+  playedCount: number;
+  savesCount: number;
+  likesCount: number;
+  saved: Set<number>;
+  liked: Set<number>;
+};
+
+type CategoryStats = {
+  questionsCount: number;
+  playedCount: number;
+};
 
 @Injectable()
 export class ContentService {
+  private readonly logger = new Logger(ContentService.name);
+
   constructor(
     @InjectRepository(CollectionEntity)
     private readonly collections: Repository<CollectionEntity>,
@@ -53,6 +81,7 @@ export class ContentService {
     user: UserEntity | undefined,
     category: CategoryEntity,
   ): boolean {
+    if (!this.canDiscoverCategory(user, category)) return false;
     if (
       category.isCustom &&
       !user?.isStaff &&
@@ -67,45 +96,85 @@ export class ContentService {
     return !expiry || expiry >= new Date().toISOString().slice(0, 10);
   }
 
-  async listCollections(user?: UserEntity) {
-    const rows = await this.collections.find({
+  private canDiscoverCategory(
+    user: UserEntity | undefined,
+    category: CategoryEntity,
+  ): boolean {
+    if (
+      category.isHidden &&
+      !user?.isStaff &&
+      category.createdById !== user?.id
+    ) {
+      return false;
+    }
+    if (!category.isCustom) return true;
+    return Boolean(
+      user?.isStaff ||
+      category.createdById === user?.id ||
+      (category.isApproved && category.privacy === 'public'),
+    );
+  }
+
+  async listCollections(
+    query: Record<string, string | string[] | undefined>,
+    user?: UserEntity,
+  ) {
+    const { limit, offset } = parsePagination(query);
+    const [rows, total] = await this.collections.findAndCount({
       order: { order: 'ASC', name: 'ASC' },
+      skip: offset,
+      take: limit,
     });
-    return paginated(
-      await Promise.all(
-        rows.map(async (collection) => {
-          const categories = await this.categories.find({
-            where: { collectionId: collection.id },
+    const categories = rows.length
+      ? (
+          await this.categories.find({
+            where: {
+              collectionId: In(rows.map((collection) => collection.id)),
+            },
             relations: { createdBy: { profile: true } },
-          });
-          return {
-            id: Number(collection.id),
-            name: collection.name,
-            order: collection.order,
-            categories: await Promise.all(
-              categories.map((item) => this.serializeCategory(item, user)),
-            ),
-            categories_count: categories.length,
-          };
-        }),
-      ),
+          })
+        ).filter((category) => this.canDiscoverCategory(user, category))
+      : [];
+    const serialized = await this.serializeCategories(categories, user);
+    const serializedById = new Map(
+      serialized.map((item, index) => [Number(categories[index].id), item]),
+    );
+    return paginated(
+      rows.map((collection) => {
+        const collectionCategories = categories
+          .filter(
+            (category) =>
+              Number(category.collectionId) === Number(collection.id),
+          )
+          .map((category) => serializedById.get(Number(category.id)));
+        return {
+          id: Number(collection.id),
+          name: collection.name,
+          order: collection.order,
+          categories: collectionCategories,
+          categories_count: collectionCategories.length,
+        };
+      }),
+      total,
+      offset,
+      limit,
     );
   }
 
   async getCollection(id: number, user?: UserEntity) {
     const collection = await this.collections.findOneBy({ id });
     if (!collection) throw new NotFoundException();
-    const categories = await this.categories.find({
-      where: { collectionId: id },
-      relations: { createdBy: { profile: true } },
-    });
+    const categories = (
+      await this.categories.find({
+        where: { collectionId: id },
+        relations: { createdBy: { profile: true } },
+      })
+    ).filter((category) => this.canDiscoverCategory(user, category));
     return {
       id: Number(collection.id),
       name: collection.name,
       order: collection.order,
-      categories: await Promise.all(
-        categories.map((item) => this.serializeCategory(item, user)),
-      ),
+      categories: await this.serializeCategories(categories, user),
       categories_count: categories.length,
     };
   }
@@ -114,11 +183,27 @@ export class ContentService {
     const collections = await this.collections.find({
       order: { order: 'ASC', name: 'ASC' },
     });
-    const official = await this.categories.find({
+    const official = await this.loadOfficialCategories();
+    return this.serializeCollectionsWithCategories(collections, official, user);
+  }
+
+  private async loadOfficialCategories() {
+    return this.categories.find({
       where: { isCustom: false, isHidden: false },
       relations: { createdBy: { profile: true } },
       order: { createdAt: 'DESC' },
     });
+  }
+
+  private async serializeCollectionsWithCategories(
+    collections: CollectionEntity[],
+    official: CategoryEntity[],
+    user?: UserEntity,
+  ) {
+    const serialized = await this.serializeCategories(official, user);
+    const serializedById = new Map(
+      serialized.map((item, index) => [Number(official[index].id), item]),
+    );
     const output: Array<Record<string, unknown>> = [];
     for (const collection of collections) {
       const items = official.filter(
@@ -129,9 +214,7 @@ export class ContentService {
         id: Number(collection.id),
         name: collection.name,
         order: collection.order,
-        categories: await Promise.all(
-          items.map((item) => this.serializeCategory(item, user)),
-        ),
+        categories: items.map((item) => serializedById.get(Number(item.id))),
         categories_count: items.length,
       });
     }
@@ -143,8 +226,8 @@ export class ContentService {
         id: -1,
         name: 'Other Categories',
         order: 999,
-        categories: await Promise.all(
-          uncategorized.map((item) => this.serializeCategory(item, user)),
+        categories: uncategorized.map((item) =>
+          serializedById.get(Number(item.id)),
         ),
         categories_count: uncategorized.length,
       });
@@ -153,37 +236,56 @@ export class ContentService {
   }
 
   async allCategoryData(user?: UserEntity) {
-    const collections = await this.collectionsWithCategories(user);
-    const fallback = await this.categories.find({
-      where: { isCustom: false, isHidden: false, collectionId: IsNull() },
-      relations: { createdBy: { profile: true } },
-    });
+    const [collectionRows, official] = await Promise.all([
+      this.collections.find({ order: { order: 'ASC', name: 'ASC' } }),
+      this.loadOfficialCategories(),
+    ]);
+    const collections = await this.serializeCollectionsWithCategories(
+      collectionRows,
+      official,
+      user,
+    );
+    const fallback = official.filter(
+      (category) => category.collectionId === null,
+    );
     const savedCategories = user ? await this.visibleSavedCategories(user) : [];
+    const savedStats = user
+      ? await this.loadUserCategoryStats(savedCategories, user.id)
+      : undefined;
     return {
       collections: collections.filter((item) => item.id !== -1),
       saved_categories: await Promise.all(
-        savedCategories.map((item) => this.serializeUserCategory(item, user!)),
+        savedCategories.map((item) =>
+          this.serializeUserCategory(item, user!, savedStats),
+        ),
       ),
-      fallback_categories: await Promise.all(
-        fallback.map((item) => this.serializeCategory(item, user)),
-      ),
+      fallback_categories: await this.serializeCategories(fallback, user),
     };
   }
 
-  async listOfficialCategories(user?: UserEntity) {
-    const rows = await this.categories.find({
-      where: { isCustom: false },
+  async listOfficialCategories(
+    query: Record<string, string | string[] | undefined>,
+    user?: UserEntity,
+  ) {
+    const { limit, offset } = parsePagination(query);
+    const [rows, total] = await this.categories.findAndCount({
+      where: { isCustom: false, isHidden: false },
       relations: { createdBy: { profile: true } },
       order: { createdAt: 'DESC' },
+      skip: offset,
+      take: limit,
     });
     return paginated(
-      await Promise.all(rows.map((item) => this.serializeCategory(item, user))),
+      await this.serializeCategories(rows, user),
+      total,
+      offset,
+      limit,
     );
   }
 
   async getOfficialCategory(id: number, user?: UserEntity) {
     const category = await this.categories.findOne({
-      where: { id, isCustom: false },
+      where: { id, isCustom: false, isHidden: false },
       relations: { createdBy: { profile: true } },
     });
     if (!category) throw new NotFoundException();
@@ -201,7 +303,9 @@ export class ContentService {
         'Listing all questions without category_id is disabled.',
       );
     }
-    const unknown = keys.filter((key) => key !== 'category_id');
+    const unknown = keys.filter(
+      (key) => !['category_id', 'limit', 'offset'].includes(key),
+    );
     if (unknown.length) {
       throw new BadRequestException({
         detail: `Unknown query parameter(s): ${unknown.join(', ')}. Only 'category_id' is permitted.`,
@@ -219,11 +323,19 @@ export class ContentService {
         category_id: 'Category does not exist.',
       });
     this.assertCategoryAccess(user, category);
-    const rows = await this.questions.find({
+    const { limit, offset } = parsePagination(query);
+    const [rows, total] = await this.questions.findAndCount({
       where: { categoryId },
       relations: { category: true },
+      skip: offset,
+      take: limit,
     });
-    return paginated(rows.map((item) => this.serializeQuestion(item)));
+    return paginated(
+      rows.map((item) => this.serializeQuestion(item)),
+      total,
+      offset,
+      limit,
+    );
   }
 
   async randomQuestions(
@@ -293,7 +405,7 @@ export class ContentService {
   async createQuestion(
     user: UserEntity,
     body: CreateQuestionDto,
-    files: Express.Multer.File[],
+    files: UploadInput,
   ) {
     const categoryId = integerId(
       stringValue(body.category_id ?? body.category),
@@ -304,8 +416,24 @@ export class ContentService {
       throw new BadRequestException({ category: 'Category does not exist.' });
     this.assertCanEditCategory(user, category);
     const question = this.questions.create({ categoryId });
-    await this.applyQuestionInput(question, body, this.fileMap(files));
-    await this.questions.save(question);
+    const uploadedKeys: string[] = [];
+    try {
+      await this.applyQuestionInput(
+        question,
+        body,
+        this.fileMap(files),
+        false,
+        uploadedKeys,
+      );
+      await this.questions.save(question);
+      if (!user.isStaff && category.isApproved) {
+        category.isApproved = false;
+        await this.categories.save(category);
+      }
+    } catch (error) {
+      await this.removeImagesBestEffort(uploadedKeys);
+      throw error;
+    }
     question.category = category;
     return this.serializeQuestion(question);
   }
@@ -314,7 +442,7 @@ export class ContentService {
     id: number,
     user: UserEntity,
     body: UpdateQuestionDto,
-    files: Express.Multer.File[],
+    files: UploadInput,
   ) {
     const question = await this.questions.findOne({
       where: { id },
@@ -322,8 +450,33 @@ export class ContentService {
     });
     if (!question) throw new NotFoundException();
     this.assertCanEditCategory(user, question.category);
-    await this.applyQuestionInput(question, body, this.fileMap(files), true);
-    await this.questions.save(question);
+    const previousImages = [question.image, question.answerImage];
+    const uploadedKeys: string[] = [];
+    try {
+      await this.applyQuestionInput(
+        question,
+        body,
+        this.fileMap(files),
+        true,
+        uploadedKeys,
+      );
+      await this.questions.save(question);
+      await this.removeImagesBestEffort(
+        previousImages.filter(
+          (key): key is string =>
+            Boolean(key) &&
+            key !== question.image &&
+            key !== question.answerImage,
+        ),
+      );
+      if (!user.isStaff && question.category.isApproved) {
+        question.category.isApproved = false;
+        await this.categories.save(question.category);
+      }
+    } catch (error) {
+      await this.removeImagesBestEffort(uploadedKeys);
+      throw error;
+    }
     return this.serializeQuestion(question);
   }
 
@@ -335,25 +488,37 @@ export class ContentService {
     if (!question) throw new NotFoundException();
     this.assertCanEditCategory(user, question.category);
     await this.questions.remove(question);
+    await this.removeImagesBestEffort([question.image, question.answerImage]);
   }
 
-  async listUserCategories(user: UserEntity) {
-    const rows = await this.categories.find({
+  async listUserCategories(
+    query: Record<string, string | string[] | undefined>,
+    user: UserEntity,
+  ) {
+    const { limit, offset } = parsePagination(query);
+    const [rows, total] = await this.categories.findAndCount({
       where: user.isStaff
         ? { isCustom: true }
         : {
             isCustom: true,
             isApproved: true,
+            isHidden: false,
             privacy: 'public',
             createdById: Not(user.id),
           },
       relations: { createdBy: { profile: true } },
       order: { createdAt: 'DESC' },
+      skip: offset,
+      take: limit,
     });
+    const stats = await this.loadUserCategoryStats(rows, user.id);
     return paginated(
       await Promise.all(
-        rows.map((item) => this.serializeUserCategory(item, user)),
+        rows.map((item) => this.serializeUserCategory(item, user, stats)),
       ),
+      total,
+      offset,
+      limit,
     );
   }
 
@@ -365,38 +530,51 @@ export class ContentService {
   async createUserCategory(
     user: UserEntity,
     body: CreateCategoryDto,
-    files: Express.Multer.File[],
+    files: UploadInput,
   ) {
     if (!stringValue(body.name).trim())
       throw new BadRequestException({ name: ['This field is required.'] });
-    const category = this.categories.create({
-      name: stringValue(body.name).trim(),
-      description: stringValue(body.description),
-      privacy: body.privacy === CategoryPrivacy.Private ? 'private' : 'public',
-      isCustom: true,
-      isApproved: false,
-      isHidden: false,
-      locked: false,
-      createdById: user.id,
-    });
     const uploadMap = this.fileMap(files);
-    const categoryImage = uploadMap.get('image');
-    if (categoryImage)
-      category.image = (
-        await this.media.storeImage(categoryImage, 'categories')
-      ).key;
-    await this.categories.save(category);
-    category.createdBy = user;
     const inputs = this.parseQuestionInputs(body, uploadMap);
-    for (const input of inputs) {
-      const question = this.questions.create({ categoryId: category.id });
-      await this.applyQuestionInput(question, input.body, input.files);
-      await this.questions.save(question);
+    const uploadedKeys: string[] = [];
+    let category: CategoryEntity;
+    try {
+      category = await this.categories.manager.transaction(async (manager) => {
+        const categoryRepository = manager.getRepository(CategoryEntity);
+        const savedRepository = manager.getRepository(SavedCategoryEntity);
+        const created = categoryRepository.create({
+          name: stringValue(body.name).trim(),
+          description: stringValue(body.description),
+          privacy:
+            body.privacy === CategoryPrivacy.Private ? 'private' : 'public',
+          isCustom: true,
+          isApproved: false,
+          isHidden: false,
+          locked: false,
+          createdById: user.id,
+        });
+        const categoryImage = uploadMap.get('image');
+        if (categoryImage) {
+          const stored = await this.storeAndTrackImage(
+            categoryImage,
+            'categories',
+            uploadedKeys,
+          );
+          created.image = stored.key;
+        }
+        await categoryRepository.save(created);
+        await this.saveQuestionBatch(manager, created.id, inputs, uploadedKeys);
+        await savedRepository.upsert(
+          { userId: user.id, categoryId: created.id },
+          ['userId', 'categoryId'],
+        );
+        return created;
+      });
+    } catch (error) {
+      await this.removeImagesBestEffort(uploadedKeys);
+      throw error;
     }
-    await this.saved.upsert({ userId: user.id, categoryId: category.id }, [
-      'userId',
-      'categoryId',
-    ]);
+    category.createdBy = user;
     return {
       message: 'Category created successfully and submitted for approval',
       category: await this.serializeUserCategory(category, user),
@@ -407,27 +585,55 @@ export class ContentService {
     id: number,
     user: UserEntity,
     body: UpdateCategoryDto,
-    files: Express.Multer.File[],
+    files: UploadInput,
   ) {
     const category = await this.getVisibleUserCategory(id, user);
     this.assertCanEditCategory(user, category);
-    if (body.name !== undefined) category.name = stringValue(body.name).trim();
-    if (body.description !== undefined)
-      category.description = stringValue(body.description);
-    if (body.privacy !== undefined)
-      category.privacy =
-        body.privacy === CategoryPrivacy.Private ? 'private' : 'public';
     const uploadMap = this.fileMap(files);
-    if (uploadMap.get('image'))
-      category.image = (
-        await this.media.storeImage(uploadMap.get('image')!, 'categories')
-      ).key;
-    await this.categories.save(category);
     const inputs = this.parseQuestionInputs(body, uploadMap);
-    for (const input of inputs) {
-      const question = this.questions.create({ categoryId: category.id });
-      await this.applyQuestionInput(question, input.body, input.files);
-      await this.questions.save(question);
+    const substantiveChange =
+      body.name !== undefined ||
+      body.description !== undefined ||
+      body.privacy !== undefined ||
+      inputs.length > 0 ||
+      uploadMap.has('image');
+    const uploadedKeys: string[] = [];
+    const previousImage = category.image;
+    try {
+      await this.categories.manager.transaction(async (manager) => {
+        const categoryRepository = manager.getRepository(CategoryEntity);
+        if (body.name !== undefined)
+          category.name = stringValue(body.name).trim();
+        if (body.description !== undefined)
+          category.description = stringValue(body.description);
+        if (body.privacy !== undefined)
+          category.privacy =
+            body.privacy === CategoryPrivacy.Private ? 'private' : 'public';
+        if (uploadMap.get('image')) {
+          const stored = await this.storeAndTrackImage(
+            uploadMap.get('image')!,
+            'categories',
+            uploadedKeys,
+          );
+          category.image = stored.key;
+        }
+        if (!user.isStaff && substantiveChange) {
+          category.isApproved = false;
+        }
+        await categoryRepository.save(category);
+        await this.saveQuestionBatch(
+          manager,
+          category.id,
+          inputs,
+          uploadedKeys,
+        );
+      });
+      if (previousImage && previousImage !== category.image) {
+        await this.removeImagesBestEffort([previousImage]);
+      }
+    } catch (error) {
+      await this.removeImagesBestEffort(uploadedKeys);
+      throw error;
     }
     return this.serializeUserCategory(category, user);
   }
@@ -435,17 +641,37 @@ export class ContentService {
   async deleteUserCategory(id: number, user: UserEntity) {
     const category = await this.getVisibleUserCategory(id, user);
     this.assertCanEditCategory(user, category);
+    const questions = await this.questions.findBy({ categoryId: id });
     await this.categories.remove(category);
+    await this.removeImagesBestEffort([
+      category.image,
+      ...questions.flatMap((question) => [
+        question.image,
+        question.answerImage,
+      ]),
+    ]);
   }
 
-  async myCategories(user: UserEntity) {
-    const rows = await this.categories.find({
+  async myCategories(
+    query: Record<string, string | string[] | undefined>,
+    user: UserEntity,
+  ) {
+    const { limit, offset } = parsePagination(query);
+    const [rows, total] = await this.categories.findAndCount({
       where: { isCustom: true, createdById: user.id },
       relations: { createdBy: { profile: true } },
       order: { createdAt: 'DESC' },
+      skip: offset,
+      take: limit,
     });
-    return Promise.all(
-      rows.map((item) => this.serializeUserCategory(item, user)),
+    const stats = await this.loadUserCategoryStats(rows, user.id);
+    return paginated(
+      await Promise.all(
+        rows.map((item) => this.serializeUserCategory(item, user, stats)),
+      ),
+      total,
+      offset,
+      limit,
     );
   }
 
@@ -453,17 +679,30 @@ export class ContentService {
     id: number,
     user: UserEntity,
     body: AddQuestionsDto,
-    files: Express.Multer.File[],
+    files: UploadInput,
   ) {
     const category = await this.getVisibleUserCategory(id, user);
     this.assertCanEditCategory(user, category);
     const inputs = this.parseQuestionInputs(body, this.fileMap(files));
     if (!inputs.length)
       throw new BadRequestException({ error: 'No questions provided' });
-    for (const input of inputs) {
-      const question = this.questions.create({ categoryId: category.id });
-      await this.applyQuestionInput(question, input.body, input.files);
-      await this.questions.save(question);
+    const uploadedKeys: string[] = [];
+    try {
+      await this.questions.manager.transaction(async (manager) => {
+        await this.saveQuestionBatch(
+          manager,
+          category.id,
+          inputs,
+          uploadedKeys,
+        );
+        if (!user.isStaff && category.isApproved) {
+          category.isApproved = false;
+          await manager.getRepository(CategoryEntity).save(category);
+        }
+      });
+    } catch (error) {
+      await this.removeImagesBestEffort(uploadedKeys);
+      throw error;
     }
     return {
       message: `Added ${inputs.length} questions to category "${category.name}"`,
@@ -473,19 +712,20 @@ export class ContentService {
 
   async saveCategory(id: number, user: UserEntity) {
     const category = await this.getVisibleUserCategory(id, user);
-    const exists = await this.saved.exists({
-      where: { userId: user.id, categoryId: id },
-    });
-    if (!exists)
-      await this.saved.save(
-        this.saved.create({ userId: user.id, categoryId: id }),
-      );
+    const result = await this.saved
+      .createQueryBuilder()
+      .insert()
+      .into(SavedCategoryEntity)
+      .values({ userId: user.id, categoryId: id })
+      .orIgnore()
+      .execute();
+    const created = result.identifiers.length > 0;
     return {
-      message: exists
+      message: !created
         ? `Category "${category.name}" is already in your collection`
         : `Category "${category.name}" added to your collection`,
       category: await this.serializeUserCategory(category, user),
-      saved: !exists,
+      saved: created,
     };
   }
 
@@ -503,11 +743,24 @@ export class ContentService {
     };
   }
 
-  async mySavedCategories(user: UserEntity) {
-    const categories = await this.visibleSavedCategories(user);
-    return Promise.all(
-      categories.map((item) => this.serializeUserCategory(item, user)),
+  async mySavedCategories(
+    user: UserEntity,
+    query: Record<string, string | string[] | undefined> = {},
+  ) {
+    const hasPagination =
+      query.limit !== undefined || query.offset !== undefined;
+    const { limit, offset } = parsePagination(query, 50, 100);
+    const builder = this.visibleSavedCategoryQuery(user);
+    const [links, total] = await builder
+      .skip(hasPagination ? offset : 0)
+      .take(hasPagination ? limit : 100)
+      .getManyAndCount();
+    const categories = links.map((link) => link.category).filter(Boolean);
+    const stats = await this.loadUserCategoryStats(categories, user.id);
+    const results = await Promise.all(
+      categories.map((item) => this.serializeUserCategory(item, user, stats)),
     );
+    return hasPagination ? paginated(results, total, offset, limit) : results;
   }
 
   async likeCategory(id: number, user: UserEntity) {
@@ -539,25 +792,22 @@ export class ContentService {
     category: CategoryEntity,
     user?: UserEntity,
     basic = false,
+    stats?: CategoryStats,
   ) {
-    const common = {
-      id: Number(category.id),
-      name: category.name,
-      locked: category.locked,
-      is_premium: category.locked,
-      image: this.media.url(category.image),
-      description: category.description,
-    };
+    const common = this.categorySummary(category);
     if (basic) return common;
-    const questionsCount = await this.questions.countBy({
-      categoryId: category.id,
-    });
+    const questionsCount =
+      stats?.questionsCount ??
+      (await this.questions.countBy({
+        categoryId: category.id,
+      }));
     return {
       ...common,
       questions_count: questionsCount,
       total_questions: questionsCount,
       user_played_questions: user
-        ? await this.userPlayedCount(category.id, user.id)
+        ? (stats?.playedCount ??
+          (await this.userPlayedCount(category.id, user.id)))
         : 0,
       is_custom: category.isCustom,
       is_approved: category.isApproved,
@@ -566,18 +816,63 @@ export class ContentService {
     };
   }
 
+  async serializeCategories(categories: CategoryEntity[], user?: UserEntity) {
+    const stats = await this.loadCategoryStats(categories, user);
+    return Promise.all(
+      categories.map((category) =>
+        this.serializeCategory(
+          category,
+          user,
+          false,
+          stats.get(Number(category.id)),
+        ),
+      ),
+    );
+  }
+
+  private async loadCategoryStats(
+    categories: CategoryEntity[],
+    user?: UserEntity,
+  ) {
+    const stats = new Map<number, CategoryStats>();
+    const categoryIds = categories.map((category) => Number(category.id));
+    if (!categoryIds.length) return stats;
+    for (const categoryId of categoryIds) {
+      stats.set(categoryId, { questionsCount: 0, playedCount: 0 });
+    }
+    const questionRows = await this.questions
+      .createQueryBuilder('question')
+      .select('question.categoryId', 'categoryId')
+      .addSelect('COUNT(question.id)', 'count')
+      .where('question.categoryId IN (:...categoryIds)', { categoryIds })
+      .groupBy('question.categoryId')
+      .getRawMany<{ categoryId: string; count: string }>();
+    for (const row of questionRows) {
+      stats.get(Number(row.categoryId))!.questionsCount = Number(row.count);
+    }
+    if (!user) return stats;
+    const playedRows = await this.played
+      .createQueryBuilder('played')
+      .innerJoin('played.game', 'game')
+      .innerJoin('played.question', 'question')
+      .select('question.categoryId', 'categoryId')
+      .addSelect('COUNT(DISTINCT played.questionId)', 'count')
+      .where('game.playerId = :userId', { userId: user.id })
+      .andWhere('question.categoryId IN (:...categoryIds)', { categoryIds })
+      .groupBy('question.categoryId')
+      .getRawMany<{ categoryId: string; count: string }>();
+    for (const row of playedRows) {
+      const categoryId = Number(row.categoryId);
+      stats.get(categoryId)!.playedCount = Number(row.count);
+    }
+    return stats;
+  }
+
   serializeQuestion(question: QuestionEntity) {
     return {
       id: Number(question.id),
       category: question.category
-        ? {
-            id: Number(question.category.id),
-            name: question.category.name,
-            locked: question.category.locked,
-            is_premium: question.category.locked,
-            image: this.media.url(question.category.image),
-            description: question.category.description,
-          }
+        ? this.categorySummary(question.category)
         : undefined,
       category_name: question.category?.name,
       text: question.text,
@@ -594,13 +889,26 @@ export class ContentService {
     };
   }
 
+  categorySummary(category: CategoryEntity) {
+    return {
+      id: Number(category.id),
+      name: category.name,
+      locked: category.locked,
+      is_premium: category.locked,
+      image: this.media.url(category.image),
+      description: category.description,
+    };
+  }
+
   private async serializeUserCategory(
     category: CategoryEntity,
     user: UserEntity,
+    stats?: Map<number, UserCategoryStats>,
   ) {
-    const questionsCount = await this.questions.countBy({
-      categoryId: category.id,
-    });
+    const categoryStats = stats?.get(Number(category.id));
+    const questionsCount =
+      categoryStats?.questionsCount ??
+      (await this.questions.countBy({ categoryId: category.id }));
     const creator = category.createdBy;
     const expiry = creator?.profile?.premiumExpiry;
     const creatorPremium = Boolean(
@@ -624,17 +932,111 @@ export class ContentService {
       updated_at: category.updatedAt,
       questions_count: questionsCount,
       total_questions: questionsCount,
-      user_played_questions: await this.userPlayedCount(category.id, user.id),
+      user_played_questions:
+        categoryStats?.playedCount ??
+        (await this.userPlayedCount(category.id, user.id)),
       is_premium: category.locked,
-      is_saved: await this.saved.exists({
-        where: { userId: user.id, categoryId: category.id },
-      }),
-      saves_count: await this.saved.countBy({ categoryId: category.id }),
-      likes_count: await this.likes.countBy({ categoryId: category.id }),
-      is_liked: await this.likes.exists({
-        where: { userId: user.id, categoryId: category.id },
-      }),
+      is_saved:
+        categoryStats?.saved.has(Number(category.id)) ??
+        (await this.saved.exists({
+          where: { userId: user.id, categoryId: category.id },
+        })),
+      saves_count:
+        categoryStats?.savesCount ??
+        (await this.saved.countBy({ categoryId: category.id })),
+      likes_count:
+        categoryStats?.likesCount ??
+        (await this.likes.countBy({ categoryId: category.id })),
+      is_liked:
+        categoryStats?.liked.has(Number(category.id)) ??
+        (await this.likes.exists({
+          where: { userId: user.id, categoryId: category.id },
+        })),
     };
+  }
+
+  private async loadUserCategoryStats(
+    categories: CategoryEntity[],
+    userId: number,
+  ): Promise<Map<number, UserCategoryStats>> {
+    const categoryIds = categories.map((category) => Number(category.id));
+    const stats = new Map<number, UserCategoryStats>();
+    if (!categoryIds.length) return stats;
+    categoryIds.forEach((id) =>
+      stats.set(id, {
+        questionsCount: 0,
+        playedCount: 0,
+        savesCount: 0,
+        likesCount: 0,
+        saved: new Set<number>(),
+        liked: new Set<number>(),
+      }),
+    );
+
+    const [questions, played, saves, likes, savedByUser, likedByUser] =
+      await Promise.all([
+        this.questions
+          .createQueryBuilder('question')
+          .select('question.category_id', 'category_id')
+          .addSelect('COUNT(*)', 'count')
+          .where('question.category_id IN (:...categoryIds)', { categoryIds })
+          .groupBy('question.category_id')
+          .getRawMany<{ category_id: string; count: string }>(),
+        this.played
+          .createQueryBuilder('played')
+          .innerJoin(GameEntity, 'game', 'game.id = played.game_id')
+          .innerJoin(
+            QuestionEntity,
+            'question',
+            'question.id = played.question_id',
+          )
+          .select('question.category_id', 'category_id')
+          .addSelect('COUNT(DISTINCT played.question_id)', 'count')
+          .where('game.player_id = :userId', { userId })
+          .andWhere('question.category_id IN (:...categoryIds)', {
+            categoryIds,
+          })
+          .groupBy('question.category_id')
+          .getRawMany<{ category_id: string; count: string }>(),
+        this.saved
+          .createQueryBuilder('saved')
+          .select('saved.category_id', 'category_id')
+          .addSelect('COUNT(*)', 'count')
+          .where('saved.category_id IN (:...categoryIds)', { categoryIds })
+          .groupBy('saved.category_id')
+          .getRawMany<{ category_id: string; count: string }>(),
+        this.likes
+          .createQueryBuilder('categoryLike')
+          .select('categoryLike.category_id', 'category_id')
+          .addSelect('COUNT(*)', 'count')
+          .where('categoryLike.category_id IN (:...categoryIds)', {
+            categoryIds,
+          })
+          .groupBy('categoryLike.category_id')
+          .getRawMany<{ category_id: string; count: string }>(),
+        this.saved.findBy({ userId, categoryId: In(categoryIds) }),
+        this.likes.findBy({ userId, categoryId: In(categoryIds) }),
+      ]);
+
+    for (const row of questions) {
+      stats.get(Number(row.category_id))!.questionsCount = Number(row.count);
+    }
+    for (const row of played) {
+      stats.get(Number(row.category_id))!.playedCount = Number(row.count);
+    }
+    for (const row of saves) {
+      stats.get(Number(row.category_id))!.savesCount = Number(row.count);
+    }
+    for (const row of likes) {
+      stats.get(Number(row.category_id))!.likesCount = Number(row.count);
+    }
+    savedByUser.forEach((item) =>
+      stats.get(Number(item.categoryId))?.saved.add(Number(item.categoryId)),
+    );
+    likedByUser.forEach((item) =>
+      stats.get(Number(item.categoryId))?.liked.add(Number(item.categoryId)),
+    );
+    return stats;
   }
 
   private assertCategoryAccess(
@@ -675,7 +1077,9 @@ export class ContentService {
     if (
       !user.isStaff &&
       category.createdById !== user.id &&
-      !(category.isApproved && category.privacy === 'public')
+      (!category.isApproved ||
+        category.privacy !== 'public' ||
+        category.isHidden)
     ) {
       throw new NotFoundException();
     }
@@ -683,20 +1087,30 @@ export class ContentService {
   }
 
   private async visibleSavedCategories(user: UserEntity) {
-    const links = await this.saved.find({
-      where: { userId: user.id },
-      relations: { category: { createdBy: { profile: true } } },
-      order: { savedAt: 'DESC' },
-    });
-    return links
+    return (await this.visibleSavedCategoryQuery(user).getMany())
       .map((link) => link.category)
-      .filter(
-        (category) =>
-          category.createdById === user.id ||
-          (category.isCustom &&
-            category.isApproved &&
-            category.privacy === 'public'),
+      .filter(Boolean);
+  }
+
+  private visibleSavedCategoryQuery(user: UserEntity) {
+    const builder = this.saved
+      .createQueryBuilder('saved')
+      .innerJoinAndSelect('saved.category', 'category')
+      .leftJoinAndSelect('category.createdBy', 'createdBy')
+      .leftJoinAndSelect('createdBy.profile', 'profile')
+      .where('saved.user_id = :userId', { userId: user.id })
+      .orderBy('saved.saved_at', 'DESC');
+    if (!user.isStaff) {
+      builder.andWhere(
+        `category.is_hidden = false AND (
+          category.is_custom = false OR
+          category.created_by_id = :userId OR
+          (category.is_approved = true AND category.privacy = 'public')
+        )`,
+        { userId: user.id },
       );
+    }
+    return builder;
   }
 
   private async userPlayedCount(
@@ -714,11 +1128,35 @@ export class ContentService {
     return Number(result?.count || 0);
   }
 
+  private async saveQuestionBatch(
+    manager: EntityManager,
+    categoryId: number,
+    inputs: Array<{
+      body: CreateQuestionInputDto;
+      files: UploadMap;
+    }>,
+    uploadedKeys: string[],
+  ) {
+    const repository = manager.getRepository(QuestionEntity);
+    for (const input of inputs) {
+      const question = repository.create({ categoryId });
+      await this.applyQuestionInput(
+        question,
+        input.body,
+        input.files,
+        false,
+        uploadedKeys,
+      );
+      await repository.save(question);
+    }
+  }
+
   private async applyQuestionInput(
     question: QuestionEntity,
     body: CreateQuestionInputDto | CreateQuestionDto | UpdateQuestionDto,
     files: UploadMap,
     partial = false,
+    uploadedKeys: string[] = [],
   ) {
     if (!partial && !stringValue(body.text).trim())
       throw new BadRequestException({ text: ['This field is required.'] });
@@ -747,20 +1185,43 @@ export class ContentService {
     if (!question.difficulty) question.difficulty = '200';
     if (question.randomKey === undefined) question.randomKey = Math.random();
     if (files.get('image')) {
-      const stored = await this.media.storeImage(
+      const stored = await this.storeAndTrackImage(
         files.get('image')!,
         'questions',
+        uploadedKeys,
       );
       question.image = stored.key;
       question.imageHash = stored.hash;
     }
     if (files.get('answer_image')) {
-      const stored = await this.media.storeImage(
+      const stored = await this.storeAndTrackImage(
         files.get('answer_image')!,
         'answers',
+        uploadedKeys,
       );
       question.answerImage = stored.key;
       question.answerImageHash = stored.hash;
+    }
+  }
+
+  private async storeAndTrackImage(
+    file: Express.Multer.File,
+    folder: 'avatars' | 'categories' | 'questions' | 'answers',
+    uploadedKeys: string[],
+  ) {
+    const stored = await this.media.storeImage(file, folder);
+    uploadedKeys.push(stored.key);
+    return stored;
+  }
+
+  private async removeImagesBestEffort(
+    keys: Iterable<string | null | undefined>,
+  ) {
+    try {
+      const stringKeys = [...keys].filter((key): key is string => Boolean(key));
+      await this.media.removeImages(stringKeys);
+    } catch (error) {
+      this.logger.error('Failed to clean up uploaded media', error);
     }
   }
 
@@ -771,23 +1232,21 @@ export class ContentService {
     const values = new Map<number, CreateQuestionInputDto>();
     const raw = body.questions;
     if (typeof raw === 'string') {
-      try {
-        const parsed = JSON.parse(raw) as CreateQuestionInputDto[];
-        if (Array.isArray(parsed))
-          parsed.forEach((item, index) => values.set(index, item));
-      } catch {
-        throw new BadRequestException({ error: 'Invalid questions format' });
-      }
+      const parsed = parseQuestionJson(raw);
+      if (Array.isArray(parsed))
+        parsed.forEach((item, index) =>
+          values.set(index, item as CreateQuestionInputDto),
+        );
     } else if (Array.isArray(raw)) {
       raw.forEach((item, index) => values.set(index, item));
     }
-    for (const [key, value] of Object.entries(body)) {
-      const match = key.match(/^questions\[(\d+)]\[(\w+)]$/);
-      if (match)
-        values.set(Number(match[1]), {
-          ...(values.get(Number(match[1])) || {}),
-          [match[2]]: value,
-        } as CreateQuestionInputDto);
+    for (const [index, item] of collectIndexedQuestionFields(
+      Object.entries(body),
+    )) {
+      values.set(index, {
+        ...(values.get(index) || {}),
+        ...item,
+      } as CreateQuestionInputDto);
     }
     for (const key of uploads.keys()) {
       const match = key.match(/^questions\[(\d+)]\[(image|answer_image)]$/);
@@ -814,8 +1273,9 @@ export class ContentService {
       }));
   }
 
-  private fileMap(files: Express.Multer.File[] = []): UploadMap {
-    return new Map(files.map((file) => [file.fieldname, file]));
+  private fileMap(files: UploadInput = []): UploadMap {
+    const list = Array.isArray(files) ? files : Object.values(files).flat();
+    return new Map(list.map((file) => [file.fieldname, file]));
   }
 
   private queryArray(value?: string | string[]): string[] {

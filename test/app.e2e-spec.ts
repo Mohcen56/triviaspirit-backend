@@ -18,6 +18,25 @@ import {
 const integrationDatabaseUrl = process.env.TEST_DATABASE_URL;
 const integrationDescribe = integrationDatabaseUrl ? describe : describe.skip;
 
+function assertDisposableIntegrationDatabase(databaseUrl: string) {
+  const parsed = new URL(databaseUrl);
+  const databaseName = parsed.pathname.replace(/^\//, '').toLowerCase();
+  const localHost = ['localhost', '127.0.0.1', '[::1]'].includes(
+    parsed.hostname.toLowerCase(),
+  );
+  if (
+    process.env.TEST_DATABASE_DISPOSABLE !== 'true' &&
+    (!localHost || !/(test|ci)/.test(databaseName))
+  ) {
+    throw new Error(
+      'TEST_DATABASE_URL must point to a local disposable test/ci database, or set TEST_DATABASE_DISPOSABLE=true explicitly.',
+    );
+  }
+}
+
+const DJANGO_PASSWORD_HASH =
+  'pbkdf2_sha256$1000$django-test-salt$M7rP4cqQe+Y9ApVkWYW925+5bVLBDM0P/321uifgVxE=';
+
 integrationDescribe('TriviaSpirit API compatibility (e2e)', () => {
   let app: import('@nestjs/common').INestApplication;
   let database: DataSource;
@@ -28,6 +47,7 @@ integrationDescribe('TriviaSpirit API compatibility (e2e)', () => {
   let gameQuestionId: number;
 
   beforeAll(async () => {
+    assertDisposableIntegrationDatabase(integrationDatabaseUrl!);
     process.env.DATABASE_URL = integrationDatabaseUrl;
     process.env.DATABASE_SSL = 'false';
     process.env.DATABASE_SYNCHRONIZE = 'true';
@@ -37,7 +57,7 @@ integrationDescribe('TriviaSpirit API compatibility (e2e)', () => {
     process.env.LEMONSQUEEZY_WEBHOOK_SECRET = 'integration-webhook-secret';
     process.env.LEMONSQUEEZY_API_KEY = '';
     process.env.LEMONSQUEEZY_STORE_ID = '';
-    process.env.LEMONSQUEEZY_VARIANT_ID = '';
+    process.env.LEMONSQUEEZY_VARIANT_ID = 'variant-1';
 
     const { AppModule } = await import('../src/app.module');
     const moduleRef = await Test.createTestingModule({
@@ -54,6 +74,7 @@ integrationDescribe('TriviaSpirit API compatibility (e2e)', () => {
     await app.init();
     database = app.get(DataSource);
     passwords = app.get(PasswordService);
+    await database.runMigrations();
   });
 
   afterAll(async () => {
@@ -197,7 +218,7 @@ integrationDescribe('TriviaSpirit API compatibility (e2e)', () => {
       userRepository.create({
         username: 'django-user',
         email: 'django@example.com',
-        password: await passwords.hash('DjangoPass123'),
+        password: DJANGO_PASSWORD_HASH,
         firstName: 'Django',
         lastName: 'Compatible',
         isActive: true,
@@ -484,9 +505,39 @@ integrationDescribe('TriviaSpirit API compatibility (e2e)', () => {
       .set('Authorization', `Token ${changedToken}`)
       .expect(401);
 
+    const resetRaceUser = await database
+      .getRepository(UserEntity)
+      .findOneByOrFail({ id: firstUser.id });
+    const resetRaceToken = passwords.makeResetToken(
+      resetRaceUser.id,
+      resetRaceUser.password,
+    );
+    const resetRaceUid = Buffer.from(String(resetRaceUser.id)).toString(
+      'base64url',
+    );
+    const resetRaceResponses = await Promise.all([
+      request(app.getHttpServer())
+        .post('/api/auth/password-reset-confirm')
+        .send({
+          uid: resetRaceUid,
+          token: resetRaceToken,
+          new_password: 'RacePass123',
+        }),
+      request(app.getHttpServer())
+        .post('/api/auth/password-reset-confirm')
+        .send({
+          uid: resetRaceUid,
+          token: resetRaceToken,
+          new_password: 'RacePass123',
+        }),
+    ]);
+    expect(
+      resetRaceResponses.map((response) => response.status).sort(),
+    ).toEqual([200, 400]);
+
     const login = await request(app.getHttpServer())
       .post('/api/auth/login')
-      .send({ email: 'owner@example.com', password: 'ResetPass123' })
+      .send({ email: 'owner@example.com', password: 'RacePass123' })
       .expect(200);
     const resetLoginToken = login.body.token as string;
     expect(resetLoginToken).not.toBe(changedToken);
@@ -514,6 +565,7 @@ integrationDescribe('TriviaSpirit API compatibility (e2e)', () => {
           total: 1499,
           currency: 'USD',
           status: 'paid',
+          updated_at: '2026-09-22T00:00:00.000Z',
           first_order_item: {
             variant_id: 'variant-1',
             product_name: 'Premium',
@@ -552,6 +604,11 @@ integrationDescribe('TriviaSpirit API compatibility (e2e)', () => {
       .expect({ status: 'duplicate' });
 
     expect(await database.getRepository(PaymentEntity).count()).toBe(1);
+    const payment = await database
+      .getRepository(PaymentEntity)
+      .findOneByOrFail({ orderId: 'integration-order-1' });
+    expect(payment.amount).toBe('14.99');
+    expect(payment.amountMinor).toBe(1499);
     expect(
       await database.getRepository(PaymentWebhookEventEntity).count(),
     ).toBe(1);

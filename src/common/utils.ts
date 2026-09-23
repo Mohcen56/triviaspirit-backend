@@ -10,12 +10,6 @@ export function integerId(value: string | number, field = 'id'): number {
   return parsed;
 }
 
-export function booleanValue(value: unknown, fallback = false): boolean {
-  if (value === undefined || value === null || value === '') return fallback;
-  if (typeof value === 'boolean') return value;
-  return ['true', '1', 'yes', 'on'].includes(stringValue(value).toLowerCase());
-}
-
 export function stringValue(value: unknown, fallback = ''): string {
   if (typeof value === 'string') return value;
   if (
@@ -28,6 +22,43 @@ export function stringValue(value: unknown, fallback = ''): string {
   return fallback;
 }
 
-export function paginated<T>(results: T[]) {
-  return { count: results.length, next: null, previous: null, results };
+export function parsePagination(
+  query: Record<string, string | string[] | undefined>,
+  defaultLimit = 50,
+  maxLimit = 100,
+) {
+  const rawLimit = Array.isArray(query.limit) ? query.limit[0] : query.limit;
+  const rawOffset = Array.isArray(query.offset)
+    ? query.offset[0]
+    : query.offset;
+  const limit = rawLimit === undefined ? defaultLimit : Number(rawLimit);
+  const offset = rawOffset === undefined ? 0 : Number(rawOffset);
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > maxLimit) {
+    throw new BadRequestException({
+      limit: `limit must be between 1 and ${maxLimit}`,
+    });
+  }
+  if (!Number.isSafeInteger(offset) || offset < 0) {
+    throw new BadRequestException({ offset: 'offset must be >= 0' });
+  }
+  return { limit, offset };
+}
+
+export function paginated<T>(
+  results: T[],
+  total = results.length,
+  offset = 0,
+  limit = results.length,
+) {
+  const paginatedResponse = offset > 0 || results.length < total;
+  return {
+    count: total,
+    next:
+      paginatedResponse && offset + results.length < total
+        ? offset + results.length
+        : null,
+    previous:
+      paginatedResponse && offset > 0 ? Math.max(0, offset - limit) : null,
+    results,
+  };
 }

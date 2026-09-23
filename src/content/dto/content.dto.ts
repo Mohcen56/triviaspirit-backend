@@ -1,4 +1,3 @@
-import { BadRequestException } from '@nestjs/common';
 import { plainToInstance, Transform, Type } from 'class-transformer';
 import {
   ArrayMaxSize,
@@ -16,6 +15,7 @@ import {
   ValidateIf,
   ValidateNested,
 } from 'class-validator';
+import { parseQuestionJson } from '../question-input';
 
 export enum CategoryPrivacy {
   Public = 'public',
@@ -29,19 +29,16 @@ export enum QuestionDifficulty {
 }
 
 function parseQuestions({ value }: { value: unknown }): unknown {
-  if (typeof value !== 'string') return value;
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    return Array.isArray(parsed)
-      ? plainToInstance(CreateQuestionInputDto, parsed)
-      : parsed;
-  } catch {
-    throw new BadRequestException({ error: 'Invalid questions format' });
-  }
+  const parsed = parseQuestionJson(value);
+  return Array.isArray(parsed)
+    ? plainToInstance(CreateQuestionInputDto, parsed)
+    : parsed;
 }
 
 const stringValue = ({ value }: { value: unknown }) =>
   typeof value === 'number' ? String(value) : value;
+
+const isProvided = (_object: unknown, value: unknown) => value !== undefined;
 
 export class CreateQuestionInputDto {
   @IsString()
@@ -50,7 +47,7 @@ export class CreateQuestionInputDto {
   @MaxLength(5000)
   text: string;
 
-  @IsOptional()
+  @ValidateIf(isProvided)
   @IsString()
   @MaxLength(5000)
   text_ar?: string;
@@ -76,36 +73,36 @@ export class CreateQuestionInputDto {
   @MaxLength(255)
   choice_4?: string;
 
-  @IsOptional()
+  @ValidateIf(isProvided)
   @IsString()
   @MaxLength(200)
   answer_ar?: string;
 
-  @IsOptional()
+  @ValidateIf(isProvided)
   @Transform(stringValue)
   @IsEnum(QuestionDifficulty)
   difficulty?: QuestionDifficulty;
 
-  @IsOptional()
+  @ValidateIf(isProvided)
   @Transform(stringValue)
   @IsEnum(QuestionDifficulty)
   points?: QuestionDifficulty;
 }
 
 export class UpdateQuestionDto {
-  @IsOptional()
+  @ValidateIf(isProvided)
   @IsString()
   @MinLength(1)
   @Matches(/\S/)
   @MaxLength(5000)
   text?: string;
 
-  @IsOptional()
+  @ValidateIf(isProvided)
   @IsString()
   @MaxLength(5000)
   text_ar?: string;
 
-  @IsOptional()
+  @ValidateIf(isProvided)
   @IsString()
   @MinLength(1)
   @Matches(/\S/)
@@ -127,17 +124,17 @@ export class UpdateQuestionDto {
   @MaxLength(255)
   choice_4?: string;
 
-  @IsOptional()
+  @ValidateIf(isProvided)
   @IsString()
   @MaxLength(200)
   answer_ar?: string;
 
-  @IsOptional()
+  @ValidateIf(isProvided)
   @Transform(stringValue)
   @IsEnum(QuestionDifficulty)
   difficulty?: QuestionDifficulty;
 
-  @IsOptional()
+  @ValidateIf(isProvided)
   @Transform(stringValue)
   @IsEnum(QuestionDifficulty)
   points?: QuestionDifficulty;
@@ -166,16 +163,16 @@ export class CreateCategoryDto {
   @MaxLength(100)
   name: string;
 
-  @IsOptional()
+  @ValidateIf(isProvided)
   @IsString()
   @MaxLength(5000)
   description?: string;
 
-  @IsOptional()
+  @ValidateIf(isProvided)
   @IsEnum(CategoryPrivacy)
   privacy?: CategoryPrivacy;
 
-  @IsOptional()
+  @ValidateIf(isProvided)
   @Transform(parseQuestions)
   @IsArray()
   @ArrayMaxSize(100)
@@ -185,23 +182,23 @@ export class CreateCategoryDto {
 }
 
 export class UpdateCategoryDto {
-  @IsOptional()
+  @ValidateIf(isProvided)
   @IsString()
   @MinLength(1)
   @Matches(/\S/)
   @MaxLength(100)
   name?: string;
 
-  @IsOptional()
+  @ValidateIf(isProvided)
   @IsString()
   @MaxLength(5000)
   description?: string;
 
-  @IsOptional()
+  @ValidateIf(isProvided)
   @IsEnum(CategoryPrivacy)
   privacy?: CategoryPrivacy;
 
-  @IsOptional()
+  @ValidateIf(isProvided)
   @Transform(parseQuestions)
   @IsArray()
   @ArrayMaxSize(100)

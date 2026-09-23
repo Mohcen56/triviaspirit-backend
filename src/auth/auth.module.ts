@@ -12,6 +12,7 @@ import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { MailService } from './mail.service';
 import { PasswordService } from './password.service';
+import { UploadCleanupInterceptor } from '../media/upload-cleanup.interceptor';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { PasswordService } from './password.service';
     MailService,
     TokenAuthGuard,
     OptionalTokenAuthGuard,
+    UploadCleanupInterceptor,
   ],
   exports: [
     TypeOrmModule,

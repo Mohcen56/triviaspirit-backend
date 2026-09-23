@@ -35,8 +35,11 @@ export class GameplayController {
   }
 
   @Get('games')
-  list(@CurrentUser() user: UserEntity) {
-    return this.gameplay.list(user);
+  list(
+    @Query() query: Record<string, string | string[] | undefined>,
+    @CurrentUser() user: UserEntity,
+  ) {
+    return this.gameplay.list(query, user);
   }
 
   @Post('games')

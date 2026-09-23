@@ -1,9 +1,13 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import {
+  DeleteObjectCommand,
+  PutObjectCommand,
+  S3Client,
+} from '@aws-sdk/client-s3';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, writeFile } from 'node:fs/promises';
-import { extname, resolve } from 'node:path';
+import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
+import { dirname, resolve, sep } from 'node:path';
 import sharp from 'sharp';
 
 export type StoredImage = { key: string; hash: string };
@@ -16,8 +20,23 @@ export class MediaService {
     const endpoint = config.get<string>('CLOUDFLARE_R2_BUCKET_ENDPOINT');
     const accessKeyId = config.get<string>('CLOUDFLARE_R2_ACCESS_KEY');
     const secretAccessKey = config.get<string>('CLOUDFLARE_R2_SECRET_KEY');
+    const bucket = config.get<string>('CLOUDFLARE_R2_BUCKET');
+    const publicUrl = config.get<string>('CLOUDFLARE_R2_PUBLIC_URL');
+    const r2Configuration = [
+      endpoint,
+      accessKeyId,
+      secretAccessKey,
+      bucket,
+      publicUrl,
+    ];
+    const configuredCount = r2Configuration.filter(Boolean).length;
+    if (configuredCount > 0 && configuredCount < r2Configuration.length) {
+      throw new Error(
+        'Cloudflare R2 configuration must include endpoint, bucket, access key, secret key, and public URL',
+      );
+    }
     this.s3 =
-      endpoint && accessKeyId && secretAccessKey
+      endpoint && accessKeyId && secretAccessKey && bucket
         ? new S3Client({
             region: 'auto',
             endpoint,
@@ -31,7 +50,9 @@ export class MediaService {
     folder: 'avatars' | 'categories' | 'questions' | 'answers',
     maxSizeMb = 10,
   ): Promise<StoredImage> {
-    if (!file?.buffer)
+    const input =
+      file?.buffer ?? (file?.path ? await readFile(file.path) : null);
+    if (!input)
       throw new BadRequestException({ error: 'No image file provided' });
     if (file.size > maxSizeMb * 1024 * 1024) {
       throw new BadRequestException({
@@ -52,8 +73,9 @@ export class MediaService {
 
     let optimized: Buffer;
     try {
-      optimized = await sharp(file.buffer, {
+      optimized = await sharp(input, {
         animated: file.mimetype === 'image/gif',
+        limitInputPixels: 16_777_216,
       })
         .rotate()
         .resize({
@@ -70,10 +92,7 @@ export class MediaService {
       });
     }
 
-    const base = file.originalname
-      .replace(extname(file.originalname), '')
-      .replace(/[^a-zA-Z0-9_-]+/g, '-');
-    const key = `${folder}/${base || 'image'}-${randomUUID()}.webp`;
+    const key = `${folder}/${randomUUID()}.webp`;
     const hash = createHash('sha256').update(optimized).digest('hex');
     const bucket = this.config.get<string>('CLOUDFLARE_R2_BUCKET');
 
@@ -92,13 +111,42 @@ export class MediaService {
         this.config.get('MEDIA_ROOT', 'media'),
       );
       const destination = resolve(root, key);
-      if (!destination.startsWith(root))
+      if (destination !== root && !destination.startsWith(`${root}${sep}`))
         throw new Error('Invalid media destination');
-      await mkdir(resolve(destination, '..'), { recursive: true });
+      await mkdir(dirname(destination), { recursive: true });
       await writeFile(destination, optimized);
     }
 
     return { key, hash };
+  }
+
+  async removeImages(keys: Iterable<string>): Promise<void> {
+    const uniqueKeys = [...new Set(keys)].filter(Boolean);
+    if (!uniqueKeys.length) return;
+    const bucket = this.config.get<string>('CLOUDFLARE_R2_BUCKET');
+    if (this.s3 && bucket) {
+      await Promise.all(
+        uniqueKeys.map((key) =>
+          this.s3!.send(new DeleteObjectCommand({ Bucket: bucket, Key: key })),
+        ),
+      );
+      return;
+    }
+    const root = resolve(process.cwd(), this.config.get('MEDIA_ROOT', 'media'));
+    await Promise.all(
+      uniqueKeys.map(async (key) => {
+        const destination = resolve(root, key);
+        if (destination === root || !destination.startsWith(`${root}${sep}`)) {
+          return;
+        }
+        try {
+          await unlink(destination);
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException).code;
+          if (code !== 'ENOENT') throw error;
+        }
+      }),
+    );
   }
 
   url(value?: string | null): string | null {

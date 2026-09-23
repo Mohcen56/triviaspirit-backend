@@ -81,7 +81,12 @@ npm run migration:run
 
 `DATABASE_MIGRATIONS_RUN=false` is the safe default so multiple replicas do not race to migrate. Generate future changes with `npm run migration:generate`, inspect the SQL, test it against a recent backup, and commit the migration with its entity change. Use `npm run migration:revert` only after reviewing the migration's `down` method and the affected production data.
 
-The first NestJS-owned migration adds the durable authentication throttle table and webhook replay ledger. Existing Django tables are treated as the baseline and are not recreated.
+The NestJS-owned migrations add the durable authentication throttle/replay tables,
+Google identity and provider-ordering columns, the case-insensitive email and
+played-question uniqueness safeguards, admin session storage, and the payment
+minor-unit column. Existing Django tables are treated as the baseline and are not
+recreated. The email and played-question migrations deliberately preflight existing
+duplicates and must be reviewed against a backup before deployment.
 
 ## Admin dashboard
 
@@ -97,7 +102,7 @@ Authentication tokens are excluded from the dashboard. Engagement, gameplay, pay
 
 ## Use the existing Django database
 
-Point `DATABASE_URL` at the same PostgreSQL database used by Django, keep `DATABASE_SYNCHRONIZE=false`, back it up, and run the versioned migrations. Existing users, tokens, categories, games, and payment history then remain available without a data copy.
+Point `DATABASE_URL` at the same PostgreSQL database used by Django, keep `DATABASE_SYNCHRONIZE=false`, back it up, and run the versioned migrations. Existing users, tokens, categories, games, and payment history then remain available without a data copy. Before changing historical payment amounts, audit whether the existing `amount` values are provider minor units or API major units; the application records new webhook amounts in both `amount` (major units) and `amount_minor` (integer minor units).
 
 Production build:
 
@@ -113,11 +118,58 @@ npm run start:prod
 Start this repository with `npm run start:dev`. In the separate frontend repository, set:
 
 ```env
+# Used by Next.js server code. It does not reach the browser bundle.
+BACKEND_API_URL=http://127.0.0.1:8000
+
+# Used by the browser only to turn relative media paths into public URLs.
 NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000
 NEXT_PUBLIC_SITE_URL=http://localhost:3000
 ```
 
 Then start the frontend and open <http://localhost:3000>.
+
+## Deploy the API to Railway
+
+This repository is ready for a Railway web service. It uses the platform-provided `PORT` and exposes `GET /health` for the deployment health check.
+
+1. Create a Railway project and choose **Deploy from GitHub repo**. Select this repository, then set the service's **Root Directory** to `nestjs-backend`.
+2. In the service settings, set these commands:
+
+   ```text
+   Build Command:      npm ci && npm run build
+   Pre-Deploy Command: npm run migration:run
+   Start Command:      npm run start:prod
+   Healthcheck Path:   /health
+   ```
+
+   The migration runs before the new server starts, so a failed migration prevents a partial application deploy. Do not enable `DATABASE_MIGRATIONS_RUN` as well; one migration mechanism is enough.
+3. Add the production variables from `.env.example` in Railway. At minimum, configure:
+
+   ```env
+   NODE_ENV=production
+   DATABASE_URL=your-production-postgresql-url
+   DATABASE_SSL=true
+   DATABASE_SYNCHRONIZE=false
+   DATABASE_MIGRATIONS_RUN=false
+   APP_SECRET=a-long-random-secret
+   ADMIN_COOKIE_SECRET=a-different-long-random-secret
+   FRONTEND_URL=https://www.your-frontend-domain.com
+   CORS_ALLOWED_ORIGINS=https://www.your-frontend-domain.com
+   MEDIA_PUBLIC_URL=https://api.your-api-domain.com/media
+   ```
+
+   Also copy any integrations you use: Cloudflare R2, Google OAuth, Lemon Squeezy, and ZeptoMail. Keep all secrets in Railway variables—never in Git.
+4. Generate a Railway public domain or attach your API domain. Verify `https://your-api-domain.com/health` returns `200` before pointing the frontend at it.
+5. In the frontend deployment variables, set both values to that public API origin and redeploy the frontend:
+
+   ```env
+   BACKEND_API_URL=https://your-api-domain.com
+   NEXT_PUBLIC_API_BASE_URL=https://your-api-domain.com
+   ```
+
+6. Update third-party callback URLs: Lemon Squeezy webhook to `https://your-api-domain.com/api/payments/webhook/`; Google OAuth's browser origin and redirect settings to your frontend domain.
+
+For local media, Railway containers are ephemeral. Use Cloudflare R2 in production, or attach durable storage and set `MEDIA_ROOT` plus `MEDIA_PUBLIC_URL` accordingly.
 
 ## Media storage
 

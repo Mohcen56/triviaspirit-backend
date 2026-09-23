@@ -48,10 +48,12 @@ export class PasswordService {
     const separator = token.indexOf('-');
     if (separator < 1) return false;
     const timestamp = Number(token.slice(0, separator));
+    const now = Date.now() / 1000;
     const provided = token.slice(separator + 1);
     if (
       !Number.isSafeInteger(timestamp) ||
-      Date.now() / 1000 - timestamp > 86_400
+      now - timestamp > 86_400 ||
+      timestamp - now > 300
     )
       return false;
     const expected = this.signResetToken(userId, passwordHash, timestamp);

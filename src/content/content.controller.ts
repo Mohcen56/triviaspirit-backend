@@ -9,16 +9,22 @@ import {
   Post,
   Put,
   Query,
+  applyDecorators,
   UploadedFiles,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
-import { AnyFilesInterceptor } from '@nestjs/platform-express';
+import {
+  AnyFilesInterceptor,
+  FileFieldsInterceptor,
+} from '@nestjs/platform-express';
+import { Throttle, minutes } from '@nestjs/throttler';
 import {
   CurrentUser,
   OptionalTokenAuthGuard,
   TokenAuthGuard,
 } from '../common/auth';
+import { AuthThrottlerGuard } from '../common/rate-limit';
 import { integerId } from '../common/utils';
 import { UserEntity } from '../database/entities';
 import { ContentService } from './content.service';
@@ -30,8 +36,56 @@ import {
   UpdateQuestionDto,
 } from './dto/content.dto';
 import { MultipartQuestionInterceptor } from './multipart-question.interceptor';
+import { UploadCleanupInterceptor } from '../media/upload-cleanup.interceptor';
+import { uploadCleanup } from '../media/upload-options';
 
-const uploadOptions = { limits: { fileSize: 10 * 1024 * 1024, files: 30 } };
+const questionUploadOptions = {
+  ...uploadCleanup,
+  limits: {
+    fileSize: 5 * 1024 * 1024,
+    files: 2,
+    parts: 12,
+    fieldSize: 1024 * 1024,
+  },
+};
+const categoryUploadOptions = {
+  ...uploadCleanup,
+  limits: {
+    fileSize: 5 * 1024 * 1024,
+    files: 20,
+    parts: 180,
+    fieldSize: 1024 * 1024,
+  },
+};
+
+function questionWrite() {
+  return applyDecorators(
+    UseGuards(AuthThrottlerGuard, TokenAuthGuard),
+    Throttle({ ip: { limit: 10, ttl: minutes(1) } }),
+    UseInterceptors(
+      FileFieldsInterceptor(
+        [
+          { name: 'image', maxCount: 1 },
+          { name: 'answer_image', maxCount: 1 },
+        ],
+        questionUploadOptions,
+      ),
+      UploadCleanupInterceptor,
+    ),
+  );
+}
+
+function categoryWrite() {
+  return applyDecorators(
+    UseGuards(AuthThrottlerGuard, TokenAuthGuard),
+    Throttle({ ip: { limit: 5, ttl: minutes(1) } }),
+    UseInterceptors(
+      AnyFilesInterceptor(categoryUploadOptions),
+      MultipartQuestionInterceptor,
+      UploadCleanupInterceptor,
+    ),
+  );
+}
 
 @Controller('api/content')
 export class ContentController {
@@ -39,8 +93,11 @@ export class ContentController {
 
   @Get('collections')
   @UseGuards(OptionalTokenAuthGuard)
-  listCollections(@CurrentUser() user?: UserEntity) {
-    return this.content.listCollections(user);
+  listCollections(
+    @Query() query: Record<string, string | string[] | undefined>,
+    @CurrentUser() user?: UserEntity,
+  ) {
+    return this.content.listCollections(query, user);
   }
 
   @Get('collections/with_categories')
@@ -63,8 +120,11 @@ export class ContentController {
 
   @Get('categories')
   @UseGuards(OptionalTokenAuthGuard)
-  listCategories(@CurrentUser() user?: UserEntity) {
-    return this.content.listOfficialCategories(user);
+  listCategories(
+    @Query() query: Record<string, string | string[] | undefined>,
+    @CurrentUser() user?: UserEntity,
+  ) {
+    return this.content.listOfficialCategories(query, user);
   }
 
   @Get('categories/:id')
@@ -92,12 +152,11 @@ export class ContentController {
   }
 
   @Post('questions')
-  @UseGuards(TokenAuthGuard)
-  @UseInterceptors(AnyFilesInterceptor(uploadOptions))
+  @questionWrite()
   createQuestion(
     @CurrentUser() user: UserEntity,
     @Body() body: CreateQuestionDto,
-    @UploadedFiles() files: Express.Multer.File[] = [],
+    @UploadedFiles() files: Record<string, Express.Multer.File[]> = {},
   ) {
     return this.content.createQuestion(user, body, files);
   }
@@ -109,25 +168,23 @@ export class ContentController {
   }
 
   @Put('questions/:id')
-  @UseGuards(TokenAuthGuard)
-  @UseInterceptors(AnyFilesInterceptor(uploadOptions))
+  @questionWrite()
   updateQuestion(
     @Param('id') id: string,
     @CurrentUser() user: UserEntity,
     @Body() body: UpdateQuestionDto,
-    @UploadedFiles() files: Express.Multer.File[] = [],
+    @UploadedFiles() files: Record<string, Express.Multer.File[]> = {},
   ) {
     return this.content.updateQuestion(integerId(id), user, body, files);
   }
 
   @Patch('questions/:id')
-  @UseGuards(TokenAuthGuard)
-  @UseInterceptors(AnyFilesInterceptor(uploadOptions))
+  @questionWrite()
   patchQuestion(
     @Param('id') id: string,
     @CurrentUser() user: UserEntity,
     @Body() body: UpdateQuestionDto,
-    @UploadedFiles() files: Express.Multer.File[] = [],
+    @UploadedFiles() files: Record<string, Express.Multer.File[]> = {},
   ) {
     return this.content.updateQuestion(integerId(id), user, body, files);
   }
@@ -144,28 +201,33 @@ export class ContentController {
 
   @Get('user-categories/my_categories')
   @UseGuards(TokenAuthGuard)
-  myCategories(@CurrentUser() user: UserEntity) {
-    return this.content.myCategories(user);
+  myCategories(
+    @Query() query: Record<string, string | string[] | undefined>,
+    @CurrentUser() user: UserEntity,
+  ) {
+    return this.content.myCategories(query, user);
   }
 
   @Get('user-categories/my_saved_categories')
   @UseGuards(TokenAuthGuard)
-  mySavedCategories(@CurrentUser() user: UserEntity) {
-    return this.content.mySavedCategories(user);
+  mySavedCategories(
+    @Query() query: Record<string, string | string[] | undefined>,
+    @CurrentUser() user: UserEntity,
+  ) {
+    return this.content.mySavedCategories(user, query);
   }
 
   @Get('user-categories')
   @UseGuards(TokenAuthGuard)
-  listUserCategories(@CurrentUser() user: UserEntity) {
-    return this.content.listUserCategories(user);
+  listUserCategories(
+    @Query() query: Record<string, string | string[] | undefined>,
+    @CurrentUser() user: UserEntity,
+  ) {
+    return this.content.listUserCategories(query, user);
   }
 
   @Post('user-categories')
-  @UseGuards(TokenAuthGuard)
-  @UseInterceptors(
-    AnyFilesInterceptor(uploadOptions),
-    MultipartQuestionInterceptor,
-  )
+  @categoryWrite()
   createUserCategory(
     @CurrentUser() user: UserEntity,
     @Body() body: CreateCategoryDto,
@@ -181,11 +243,7 @@ export class ContentController {
   }
 
   @Put('user-categories/:id')
-  @UseGuards(TokenAuthGuard)
-  @UseInterceptors(
-    AnyFilesInterceptor(uploadOptions),
-    MultipartQuestionInterceptor,
-  )
+  @categoryWrite()
   updateUserCategory(
     @Param('id') id: string,
     @CurrentUser() user: UserEntity,
@@ -196,11 +254,7 @@ export class ContentController {
   }
 
   @Patch('user-categories/:id')
-  @UseGuards(TokenAuthGuard)
-  @UseInterceptors(
-    AnyFilesInterceptor(uploadOptions),
-    MultipartQuestionInterceptor,
-  )
+  @categoryWrite()
   patchUserCategory(
     @Param('id') id: string,
     @CurrentUser() user: UserEntity,
@@ -221,11 +275,7 @@ export class ContentController {
   }
 
   @Post('user-categories/:id/add_questions')
-  @UseGuards(TokenAuthGuard)
-  @UseInterceptors(
-    AnyFilesInterceptor(uploadOptions),
-    MultipartQuestionInterceptor,
-  )
+  @categoryWrite()
   addQuestions(
     @Param('id') id: string,
     @CurrentUser() user: UserEntity,

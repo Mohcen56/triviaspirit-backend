@@ -7,7 +7,7 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
 import { AuthService } from '../auth/auth.service';
-import { paginated, stringValue } from '../common/utils';
+import { paginated, parsePagination, stringValue } from '../common/utils';
 import { ContentService } from '../content/content.service';
 import {
   CategoryEntity,
@@ -25,8 +25,6 @@ export class GameplayService {
   constructor(
     @InjectRepository(GameEntity)
     private readonly games: Repository<GameEntity>,
-    @InjectRepository(GameCategoryEntity)
-    private readonly gameCategories: Repository<GameCategoryEntity>,
     @InjectRepository(CategoryEntity)
     private readonly categories: Repository<CategoryEntity>,
     @InjectRepository(QuestionEntity)
@@ -38,8 +36,12 @@ export class GameplayService {
     private readonly media: MediaService,
   ) {}
 
-  async list(user: UserEntity) {
-    const rows = await this.games.find({
+  async list(
+    query: Record<string, string | string[] | undefined>,
+    user: UserEntity,
+  ) {
+    const { limit, offset } = parsePagination(query);
+    const [rows, total] = await this.games.findAndCount({
       where: { playerId: user.id },
       relations: {
         player: { profile: true },
@@ -47,11 +49,16 @@ export class GameplayService {
         playedQuestions: { question: { category: true } },
       },
       order: { datePlayed: 'DESC' },
+      skip: offset,
+      take: limit,
     });
     return paginated(
       await Promise.all(
         rows.map((game) => this.serializeGame(game, user, false)),
       ),
+      total,
+      offset,
+      limit,
     );
   }
 
@@ -125,11 +132,9 @@ export class GameplayService {
       );
       return created;
     });
-    return this.serializeGame(
-      await this.loadGame(game.id, user.id),
-      user,
-      false,
-    );
+    const loaded = await this.loadGame(game.id, user.id);
+    await this.ensureBoardSnapshot(loaded);
+    return this.serializeGame(loaded, user, false);
   }
 
   async retrieve(id: number, user: UserEntity) {
@@ -139,13 +144,15 @@ export class GameplayService {
   }
 
   async remove(id: number, user: UserEntity) {
-    const game = await this.loadGame(id, user.id);
+    const game = await this.games.findOneBy({ id, playerId: user.id });
+    if (!game) throw new NotFoundException();
     await this.games.remove(game);
   }
 
   async finishRound(id: number, user: UserEntity, body: FinishRoundDto) {
     const game = await this.loadGame(id, user.id);
     this.assertGameAccess(game, user);
+    await this.ensureBoardSnapshot(game);
     if (!Array.isArray(body.played_question_ids)) {
       throw new BadRequestException({
         error: 'played_question_ids must be a list',
@@ -163,6 +170,14 @@ export class GameplayService {
     const categoryIds = (game.categoryLinks || []).map((link) =>
       Number(link.categoryId),
     );
+    const boardIds = new Set(
+      (game.boardQuestionIds || []).map((questionId) => Number(questionId)),
+    );
+    if (ids.some((questionId) => !boardIds.has(questionId))) {
+      throw new BadRequestException({
+        error: 'Every played question must belong to this game board',
+      });
+    }
     const questions = await this.questions.findBy({
       id: In(ids),
       categoryId: In(categoryIds),
@@ -182,13 +197,24 @@ export class GameplayService {
     const additions = questions
       .filter((item) => !existingIds.has(Number(item.id)))
       .map((item) => this.played.create({ gameId: id, questionId: item.id }));
-    if (additions.length) await this.played.save(additions);
-    return { status: 'ok', saved: additions.length };
+    if (!additions.length) return { status: 'ok', saved: 0 };
+    const result = await this.played
+      .createQueryBuilder()
+      .insert()
+      .into(PlayedQuestionEntity)
+      .values(
+        additions.map(({ gameId, questionId }) => ({ gameId, questionId })),
+      )
+      .orIgnore()
+      .returning(['id'])
+      .execute();
+    return { status: 'ok', saved: result.identifiers.length };
   }
 
   async availableQuestions(id: number, user: UserEntity) {
     const game = await this.loadGame(id, user.id);
     this.assertGameAccess(game, user);
+    await this.ensureBoardSnapshot(game);
     return (await this.getAvailableQuestions(game)).map((question) =>
       this.content.serializeQuestion(question),
     );
@@ -201,8 +227,9 @@ export class GameplayService {
     const count = Number.isFinite(countValue)
       ? Math.max(1, Math.min(Math.trunc(countValue), 10))
       : 4;
-    return (await this.getOutsideBoardQuestions(game, count)).map((question) =>
-      this.content.serializeQuestion(question),
+    const available = await this.getAvailableQuestions(game);
+    return (await this.getOutsideBoardQuestions(game, count, available)).map(
+      (question) => this.content.serializeQuestion(question),
     );
   }
 
@@ -228,11 +255,8 @@ export class GameplayService {
       mode: game.mode,
       date_played: game.datePlayed.toISOString(),
       categories: (game.categoryLinks || []).map(({ category }) => ({
-        id: Number(category.id),
-        name: category.name,
-        description: category.description,
+        ...this.content.categorySummary(category),
         image_url: this.media.url(category.image),
-        is_premium: category.locked,
       })),
     }));
   }
@@ -247,11 +271,7 @@ export class GameplayService {
       id: Number(game.id),
       player: this.auth.serializeUser(game.player || user),
       mode: game.mode,
-      categories: await Promise.all(
-        categories.map((category) =>
-          this.content.serializeCategory(category, user),
-        ),
-      ),
+      categories: await this.content.serializeCategories(categories, user),
       teams: (game.teams || []).map((team, index) => ({
         ...team,
         id: team.id ?? index + 1,
@@ -264,7 +284,7 @@ export class GameplayService {
         this.content.serializeQuestion(question),
       );
       base.outside_board_questions = (
-        await this.getOutsideBoardQuestions(game, 4)
+        await this.getOutsideBoardQuestions(game, 4, available)
       ).map((question) => this.content.serializeQuestion(question));
     } else {
       base.played_questions = (game.playedQuestions || [])
@@ -282,13 +302,66 @@ export class GameplayService {
   private async getAvailableQuestions(
     game: GameEntity,
   ): Promise<QuestionEntity[]> {
+    await this.ensureBoardSnapshot(game);
+    const boardIds = game.boardQuestionIds || [];
+    if (!boardIds.length) return [];
+    const questions = await this.questions.find({
+      where: { id: In(boardIds) },
+      relations: { category: true },
+    });
+    const byId = new Map(
+      questions.map((question) => [Number(question.id), question]),
+    );
+    const currentPlayed = new Set(
+      (game.playedQuestions || []).map((item) => Number(item.questionId)),
+    );
+    return boardIds
+      .map((questionId) => byId.get(Number(questionId)))
+      .filter(
+        (question): question is QuestionEntity =>
+          question !== undefined && !currentPlayed.has(Number(question.id)),
+      );
+  }
+
+  private async ensureBoardSnapshot(game: GameEntity): Promise<void> {
+    if (game.boardQuestionIds !== null) return;
+    const selected = await this.selectBoardQuestions(game);
+    const boardIds = [
+      ...new Set([
+        ...(game.playedQuestions || []).map((item) => Number(item.questionId)),
+        ...selected.map((question) => Number(question.id)),
+      ]),
+    ];
+    await this.games.manager.transaction(async (manager) => {
+      const current = await manager.findOne(GameEntity, {
+        where: { id: game.id },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!current) throw new NotFoundException();
+      if (current.boardQuestionIds === null) {
+        current.boardQuestionIds = boardIds;
+        await manager.save(GameEntity, current);
+      }
+      game.boardQuestionIds = current.boardQuestionIds;
+    });
+  }
+
+  private async selectBoardQuestions(
+    game: GameEntity,
+  ): Promise<QuestionEntity[]> {
+    const categoryIds = (game.categoryLinks || []).map((link) =>
+      Number(link.categoryId),
+    );
+    if (!categoryIds.length) return [];
     const currentPlayed = new Set(
       (game.playedQuestions || []).map((item) => Number(item.questionId)),
     );
     const history = await this.played
       .createQueryBuilder('played')
       .innerJoin(GameEntity, 'game', 'game.id = played.game_id')
+      .innerJoin(QuestionEntity, 'question', 'question.id = played.question_id')
       .where('game.player_id = :playerId', { playerId: game.playerId })
+      .andWhere('question.category_id IN (:...categoryIds)', { categoryIds })
       .select('played.question_id', 'question_id')
       .addSelect('played.game_id', 'game_id')
       .addSelect('game.date_played', 'date_played')
@@ -347,8 +420,8 @@ export class GameplayService {
   private async getOutsideBoardQuestions(
     game: GameEntity,
     count: number,
+    available: QuestionEntity[],
   ): Promise<QuestionEntity[]> {
-    const available = await this.getAvailableQuestions(game);
     const excluded = new Set([
       ...available.map((item) => Number(item.id)),
       ...(game.playedQuestions || []).map((item) => Number(item.questionId)),

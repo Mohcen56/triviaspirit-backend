@@ -1,5 +1,7 @@
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import type {
+  ActionRequest,
+  ActionContext,
   BaseDatabase,
   BaseResource,
   CurrentAdmin,
@@ -9,9 +11,11 @@ import type {
   ResourceWithOptions,
 } from 'adminjs';
 import { ConfigService } from '@nestjs/config';
-import { validate } from 'class-validator';
+import { ValidationError, validate } from 'class-validator';
+import { Router } from 'express';
+import session, { Session } from 'express-session';
 import { resolve } from 'node:path';
-import { ILike, In } from 'typeorm';
+import { DataSource, In, Raw } from 'typeorm';
 import { PasswordService } from '../auth/password.service';
 import {
   CategoryEntity,
@@ -28,6 +32,7 @@ import {
   UserProfileEntity,
 } from '../database/entities';
 import { MediaService } from '../media/media.service';
+import { PostgresSessionStore } from './postgres-session-store';
 
 type NativeImport = (specifier: string) => Promise<unknown>;
 type TypeOrmAdapterModule = {
@@ -56,6 +61,181 @@ type EnrichedResponse =
 function responseRecords(response: EnrichedResponse): RecordJSON[] {
   if ('records' in response) return response.records;
   return [response.record];
+}
+
+function removeSensitiveValues(value: unknown): void {
+  if (Array.isArray(value)) {
+    value.forEach(removeSensitiveValues);
+    return;
+  }
+  if (!value || typeof value !== 'object') return;
+  const record = value as Record<string, unknown>;
+  Object.keys(record).forEach((key) => {
+    if (
+      key === 'password' ||
+      key === 'passwordHash' ||
+      key === 'password_hash'
+    ) {
+      delete record[key];
+      return;
+    }
+    removeSensitiveValues(record[key]);
+  });
+}
+
+function stripSensitiveUserResponse<T extends EnrichedResponse>(
+  response: T,
+): T {
+  responseRecords(response).forEach((record) =>
+    removeSensitiveValues(record.params),
+  );
+  return response;
+}
+
+function validateAdminEntity(object: object): ValidationError[] {
+  const values = object as Record<string, unknown>;
+  const errors: ValidationError[] = [];
+  const type = object.constructor?.name;
+  const add = (property: string, message: string) => {
+    const error = new ValidationError();
+    error.target = object;
+    error.property = property;
+    error.constraints = { admin: message };
+    errors.push(error);
+  };
+  const requiredText = (property: string) => {
+    if (typeof values[property] !== 'string' || !values[property].trim()) {
+      add(property, `${property} must be a non-empty string`);
+    }
+  };
+  const positiveInteger = (property: string) => {
+    const value = values[property];
+    if (
+      !Number.isSafeInteger(
+        typeof value === 'string' ? Number(value) : value,
+      ) ||
+      Number(value) <= 0
+    ) {
+      add(property, `${property} must be a positive integer`);
+    }
+  };
+
+  if (type === UserEntity.name) {
+    requiredText('username');
+    if (
+      typeof values.email !== 'string' ||
+      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(values.email.trim())
+    ) {
+      add('email', 'email must be a valid email address');
+    }
+  } else if (type === CollectionEntity.name) {
+    requiredText('name');
+    if (!Number.isInteger(Number(values.order)))
+      add('order', 'order must be an integer');
+  } else if (type === CategoryEntity.name) {
+    requiredText('name');
+    if (values.privacy !== 'public' && values.privacy !== 'private') {
+      add('privacy', 'privacy must be public or private');
+    }
+    if (values.collectionId !== null && values.collectionId !== undefined) {
+      positiveInteger('collectionId');
+    }
+    if (values.createdById !== null && values.createdById !== undefined) {
+      positiveInteger('createdById');
+    }
+  } else if (type === QuestionEntity.name) {
+    positiveInteger('categoryId');
+    requiredText('text');
+    requiredText('answer');
+    if (!['200', '400', '600'].includes(String(values.difficulty))) {
+      add('difficulty', 'difficulty must be 200, 400, or 600');
+    }
+  }
+  return errors;
+}
+
+function restrictUserWritePayload(
+  request: ActionRequest,
+  context: ActionContext,
+): ActionRequest {
+  const allowed = new Set([
+    'username',
+    'email',
+    'firstName',
+    'lastName',
+    'isActive',
+  ]);
+  if (context.currentAdmin?.title === 'Superuser') {
+    allowed.add('isStaff');
+    allowed.add('isSuperuser');
+  }
+  if (request.payload) {
+    request.payload = Object.fromEntries(
+      Object.entries(request.payload).filter(([key]) => allowed.has(key)),
+    );
+  }
+  return request;
+}
+
+function restrictPayloadTo(allowedProperties: string[]) {
+  const allowed = new Set(allowedProperties);
+  return (request: ActionRequest): ActionRequest => {
+    if (request.payload) {
+      request.payload = Object.fromEntries(
+        Object.entries(request.payload).filter(([key]) => allowed.has(key)),
+      );
+    }
+    return request;
+  };
+}
+
+const collectionWritePayload = restrictPayloadTo(['name', 'order']);
+function restrictProfileWritePayload(
+  request: ActionRequest,
+  context: ActionContext,
+): ActionRequest {
+  const allowed = new Set(['userId', 'avatar', 'bio']);
+  if (context.currentAdmin?.title === 'Superuser') {
+    allowed.add('isPremium');
+    allowed.add('premiumExpiry');
+  }
+  if (request.payload) {
+    request.payload = Object.fromEntries(
+      Object.entries(request.payload).filter(([key]) => allowed.has(key)),
+    );
+  }
+  return request;
+}
+const categoryWritePayload = restrictPayloadTo([
+  'name',
+  'description',
+  'image',
+  'collectionId',
+  'locked',
+  'isHidden',
+  'isCustom',
+  'isApproved',
+  'privacy',
+]);
+const questionWritePayload = restrictPayloadTo([
+  'categoryId',
+  'text',
+  'textAr',
+  'answer',
+  'answerAr',
+  'choice2',
+  'choice3',
+  'choice4',
+  'difficulty',
+  'image',
+  'answerImage',
+  'randomKey',
+]);
+
+async function addUserDetailsAndStrip<T extends EnrichedResponse>(
+  response: T,
+): Promise<T> {
+  return stripSensitiveUserResponse(await addUserDetails(response));
 }
 
 function numericParam(record: RecordJSON, property: string): number {
@@ -245,8 +425,21 @@ const resources: ResourceWithOptions[] = [
       },
       actions: {
         new: { isAccessible: false },
-        list: { after: addUserDetails },
-        show: { after: addUserDetails },
+        delete: {
+          isAccessible: ({ currentAdmin }) =>
+            currentAdmin?.title === 'Superuser',
+        },
+        bulkDelete: {
+          isAccessible: ({ currentAdmin }) =>
+            currentAdmin?.title === 'Superuser',
+        },
+        list: { after: addUserDetailsAndStrip },
+        show: { after: addUserDetailsAndStrip },
+        search: { after: stripSensitiveUserResponse },
+        edit: {
+          before: restrictUserWritePayload,
+          after: stripSensitiveUserResponse,
+        },
       },
     },
   },
@@ -293,6 +486,7 @@ const resources: ResourceWithOptions[] = [
         new: { isAccessible: false },
         list: { after: addProfileDetails },
         show: { after: addProfileDetails },
+        edit: { before: restrictProfileWritePayload },
       },
     },
   },
@@ -308,6 +502,10 @@ const resources: ResourceWithOptions[] = [
       sort: { sortBy: 'order', direction: 'asc' },
       properties: {
         categories: { isVisible: false },
+      },
+      actions: {
+        new: { before: collectionWritePayload },
+        edit: { before: collectionWritePayload },
       },
     },
   },
@@ -392,6 +590,8 @@ const resources: ResourceWithOptions[] = [
       actions: {
         list: { after: addCategoryDetails },
         show: { after: addCategoryDetails },
+        new: { before: categoryWritePayload },
+        edit: { before: categoryWritePayload },
       },
     },
   },
@@ -486,6 +686,7 @@ const resources: ResourceWithOptions[] = [
       actions: {
         list: { after: addQuestionDetails },
         show: { after: addQuestionDetails },
+        edit: { before: questionWritePayload },
       },
     },
   },
@@ -615,6 +816,7 @@ const resources: ResourceWithOptions[] = [
         'userId',
         'orderId',
         'amount',
+        'amountMinor',
         'currency',
         'status',
         'paidAt',
@@ -626,6 +828,7 @@ const resources: ResourceWithOptions[] = [
         'orderId',
         'customerId',
         'amount',
+        'amountMinor',
         'currency',
         'status',
         'variantId',
@@ -706,6 +909,7 @@ const resources: ResourceWithOptions[] = [
 
 export async function setupAdmin(app: NestExpressApplication): Promise<void> {
   const config = app.get(ConfigService);
+  const dataSource = app.get(DataSource);
   const passwords = app.get(PasswordService);
   const media = app.get(MediaService);
   const cookieSecret =
@@ -730,7 +934,13 @@ export async function setupAdmin(app: NestExpressApplication): Promise<void> {
       : resolve(process.cwd(), 'src', 'admin', 'components', 'media-preview');
   const mediaPreview = componentLoader.add('MediaPreview', mediaPreviewPath);
   const { Database, Resource } = typeormModule;
-  Resource.validate = validate;
+  Resource.validate = async (object) => {
+    if (!object || typeof object !== 'object') return Promise.resolve([]);
+    const classValidatorErrors = await validate(object, {
+      forbidUnknownValues: false,
+    });
+    return [...classValidatorErrors, ...validateAdminEntity(object)];
+  };
   AdminJS.registerAdapter({ Database, Resource });
 
   const mediaProperties = new Map<unknown, string[]>([
@@ -778,7 +988,11 @@ export async function setupAdmin(app: NestExpressApplication): Promise<void> {
     password: string,
   ): Promise<CurrentAdmin | null> => {
     const user = await UserEntity.findOne({
-      where: { email: ILike(email.trim()) },
+      where: {
+        email: Raw((column) => `LOWER(${column}) = :normalizedEmail`, {
+          normalizedEmail: email.trim().toLowerCase(),
+        }),
+      },
       relations: { profile: true },
     });
     if (
@@ -795,9 +1009,50 @@ export async function setupAdmin(app: NestExpressApplication): Promise<void> {
       email: user.email,
       title: user.isSuperuser ? 'Superuser' : 'Staff',
       avatarUrl: media.url(user.profile?.avatar) || undefined,
+      sessionVersion: user.sessionVersion || 0,
     };
   };
 
+  const sessionOptions = {
+    secret: cookieSecret,
+    resave: false,
+    saveUninitialized: false,
+    store: new PostgresSessionStore(dataSource),
+    cookie: {
+      httpOnly: true,
+      sameSite: 'lax' as const,
+      secure: config.get('NODE_ENV') === 'production',
+      maxAge: 8 * 60 * 60 * 1000,
+    },
+  };
+  const predefinedRouter = Router();
+  predefinedRouter.use(session(sessionOptions));
+  predefinedRouter.use(async (request, response, next) => {
+    const adminUser = (request.session as Session & { adminUser?: unknown })
+      .adminUser as
+      { id?: string | number; sessionVersion?: number } | undefined;
+    if (!adminUser?.id) {
+      next();
+      return;
+    }
+    try {
+      const user = await dataSource.getRepository(UserEntity).findOneBy({
+        id: Number(adminUser.id),
+      });
+      if (
+        !user ||
+        !user.isActive ||
+        (!user.isStaff && !user.isSuperuser) ||
+        (adminUser.sessionVersion ?? -1) !== (user.sessionVersion || 0)
+      ) {
+        request.session.destroy(() => response.redirect('/admin/login'));
+        return;
+      }
+      next();
+    } catch (error) {
+      next(error);
+    }
+  });
   const adminRouter = expressModule.buildAuthenticatedRouter(
     admin,
     {
@@ -806,18 +1061,8 @@ export async function setupAdmin(app: NestExpressApplication): Promise<void> {
       cookiePassword: cookieSecret,
       maxRetries: { count: 5, duration: 60 },
     },
-    null,
-    {
-      secret: cookieSecret,
-      resave: false,
-      saveUninitialized: false,
-      cookie: {
-        httpOnly: true,
-        sameSite: 'lax',
-        secure: config.get('NODE_ENV') === 'production',
-        maxAge: 8 * 60 * 60 * 1000,
-      },
-    },
+    predefinedRouter,
+    sessionOptions,
   );
 
   app.use(admin.options.rootPath, adminRouter);

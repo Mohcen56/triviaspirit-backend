@@ -4,6 +4,7 @@ import {
   CreateCategoryDto,
   CreateQuestionDto,
   UpdateCategoryDto,
+  UpdateQuestionDto,
 } from './content.dto';
 
 describe('Content DTOs', () => {
@@ -60,5 +61,30 @@ describe('Content DTOs', () => {
     await expect(
       validate(overlong, { whitelist: true }),
     ).resolves.not.toHaveLength(0);
+  });
+
+  it('rejects null for non-nullable update fields but permits clearing choices', async () => {
+    const category = plainToInstance(UpdateCategoryDto, { name: null });
+    const question = plainToInstance(UpdateQuestionDto, {
+      text: null,
+      answer: null,
+      choice_2: null,
+    });
+
+    await expect(
+      validate(category, { whitelist: true }),
+    ).resolves.not.toHaveLength(0);
+    const questionErrors = await validate(question, { whitelist: true });
+    expect(questionErrors).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ property: 'text' }),
+        expect.objectContaining({ property: 'answer' }),
+      ]),
+    );
+    expect(questionErrors).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ property: 'choice_2' }),
+      ]),
+    );
   });
 });

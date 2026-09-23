@@ -13,6 +13,7 @@ import { MediaModule } from '../media/media.module';
 import { ContentController } from './content.controller';
 import { ContentService } from './content.service';
 import { MultipartQuestionInterceptor } from './multipart-question.interceptor';
+import { UploadCleanupInterceptor } from '../media/upload-cleanup.interceptor';
 
 @Module({
   imports: [
@@ -28,7 +29,11 @@ import { MultipartQuestionInterceptor } from './multipart-question.interceptor';
     MediaModule,
   ],
   controllers: [ContentController],
-  providers: [ContentService, MultipartQuestionInterceptor],
+  providers: [
+    ContentService,
+    MultipartQuestionInterceptor,
+    UploadCleanupInterceptor,
+  ],
   exports: [ContentService],
 })
 export class ContentModule {}

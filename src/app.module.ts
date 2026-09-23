@@ -8,10 +8,11 @@ import { GameplayModule } from './gameplay/gameplay.module';
 import { MediaModule } from './media/media.module';
 import { PaymentsModule } from './payments/payments.module';
 import { AppController } from './app.controller';
+import { validateEnvironment } from './config/env.validation';
 
 @Module({
   imports: [
-    ConfigModule.forRoot({ isGlobal: true }),
+    ConfigModule.forRoot({ isGlobal: true, validate: validateEnvironment }),
     TypeOrmModule.forRoot(databaseOptions()),
     MediaModule,
     AuthModule,

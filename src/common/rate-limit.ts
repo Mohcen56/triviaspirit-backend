@@ -106,7 +106,7 @@ export class AuthThrottlerGuard extends ThrottlerGuard {
   }
 
   private accountTracker(request: Request): string {
-    const path = request.path.toLowerCase();
+    const path = request.path.toLowerCase().replace(/\/+$/, '');
     const body = request.body as Record<string, unknown> | undefined;
     let account: string | undefined;
     if (path.endsWith('/login') || path.endsWith('/password-reset')) {

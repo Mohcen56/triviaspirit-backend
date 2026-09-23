@@ -2,6 +2,7 @@ import { ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
 import { NestExpressApplication } from '@nestjs/platform-express';
+import { NextFunction, Request, Response } from 'express';
 import { resolve } from 'node:path';
 import { setupAdmin } from './admin/setup-admin';
 import { AppModule } from './app.module';
@@ -10,6 +11,7 @@ async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     rawBody: true,
   });
+  app.enableShutdownHooks();
   const config = app.get(ConfigService);
   const port = config.get<number>('PORT', 8000);
   const origins = config
@@ -23,6 +25,29 @@ async function bootstrap() {
 
   app.enableCors({ origin: origins, credentials: true });
   app.useGlobalPipes(new ValidationPipe({ transform: true, whitelist: true }));
+  app.use((request: Request, response: Response, next: NextFunction): void => {
+    const contentType = request.headers['content-type'] || '';
+    const contentLength = Number(request.headers['content-length'] || 0);
+    if (
+      contentType.toLowerCase().startsWith('multipart/form-data') &&
+      Number.isSafeInteger(contentLength) &&
+      contentLength > 64 * 1024 * 1024
+    ) {
+      response.status(413).json({ error: 'Multipart request is too large' });
+      return;
+    }
+    next();
+  });
+  const trustProxyValue = config.get<string>('TRUST_PROXY', 'false').trim();
+  const trustProxy =
+    trustProxyValue === 'true'
+      ? true
+      : trustProxyValue === 'false'
+        ? false
+        : /^\d+$/.test(trustProxyValue)
+          ? Number(trustProxyValue)
+          : trustProxyValue;
+  app.set('trust proxy', trustProxy);
   app.useStaticAssets(
     resolve(process.cwd(), config.get<string>('MEDIA_ROOT', 'media')),
     {
@@ -30,7 +55,6 @@ async function bootstrap() {
     },
   );
   await setupAdmin(app);
-  app.set('trust proxy', 1);
   await app.listen(port, '0.0.0.0');
 }
 

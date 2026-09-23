@@ -4,12 +4,14 @@ import {
   Get,
   Headers,
   Post,
+  Query,
   RawBodyRequest,
   Req,
   UseGuards,
 } from '@nestjs/common';
 import { Request } from 'express';
 import { CurrentUser, TokenAuthGuard } from '../common/auth';
+import { parsePagination } from '../common/utils';
 import { UserEntity } from '../database/entities';
 import { PaymentsService } from './payments.service';
 import { CheckoutDto, PaymentWebhookDto } from './dto/payments.dto';
@@ -35,7 +37,10 @@ export class PaymentsController {
 
   @Get('history')
   @UseGuards(TokenAuthGuard)
-  history(@CurrentUser() user: UserEntity) {
-    return this.payments.history(user);
+  history(
+    @CurrentUser() user: UserEntity,
+    @Query() query: Record<string, string | string[] | undefined>,
+  ) {
+    return this.payments.history(user, parsePagination(query, 50, 100));
   }
 }

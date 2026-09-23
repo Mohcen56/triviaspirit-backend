@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -69,5 +70,34 @@ describe('PaymentsService webhook security', () => {
       },
     );
     expect(transaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects refunds for an unexpected entitlement variant', () => {
+    const { subject } = service({
+      LEMONSQUEEZY_WEBHOOK_SECRET: 'secret',
+      LEMONSQUEEZY_VARIANT_ID: 'premium-variant',
+      LEMONSQUEEZY_STORE_ID: 'store-1',
+      LEMONSQUEEZY_TEST_MODE: 'false',
+    });
+    const validateRefund = (
+      subject as unknown as {
+        validateRefund(
+          attributes: Record<string, unknown>,
+          storedVariantId: string,
+        ): void;
+      }
+    ).validateRefund.bind(subject);
+
+    expect(() =>
+      validateRefund(
+        {
+          status: 'refunded',
+          updated_at: '2026-09-23T00:00:00.000Z',
+          store_id: 'store-1',
+          test_mode: false,
+        },
+        'unexpected-variant',
+      ),
+    ).toThrow(BadRequestException);
   });
 });
