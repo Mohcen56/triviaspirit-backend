@@ -3,17 +3,17 @@
 ![NestJS](https://img.shields.io/badge/NestJS-E0234E?logo=nestjs&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&logoColor=white)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16+-4169E1?logo=postgresql&logoColor=white)
-[![CI](https://github.com/Mohcen56/triviaspirit-backend/actions/workflows/ci.yml/badge.svg)](https://github.com/Mohcen56/triviaspirit-backend/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/Mohcen56/triviaspirit-backend/branch/main/graph/badge.svg)](https://codecov.io/gh/Mohcen56/triviaspirit-backend)
+[![CI](https://github.com/Mohcen56/triviaspirit-backend-Nest.js/actions/workflows/ci.yml/badge.svg)](https://github.com/Mohcen56/triviaspirit-backend-Nest.js/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/Mohcen56/triviaspirit-backend-Nest.js/branch/main/graph/badge.svg)](https://codecov.io/gh/Mohcen56/triviaspirit-backend-Nest.js)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 > A production-minded NestJS and TypeScript API for a turn-based trivia platform.
 
-[Live API health](https://api.triviaspirit.com/health) · [NestJS source on GitHub](https://github.com/Mohcen56/triviaspirit-backend) · [Local health check](http://localhost:8000/health)
+[Live API health](https://api.triviaspirit.com/health) · [NestJS source on GitHub](https://github.com/Mohcen56/triviaspirit-backend-Nest.js) · [Local health check](http://localhost:8000/health)
 
 ## At a glance
 
-TriviaSpirit is a multiplayer trivia product with authentication, user-generated content, turn-based games, subscriptions, media uploads, and an admin dashboard.
+TriviaSpirit is a trivia platform with authentication, user-generated content, turn-based games, subscriptions, media uploads, and an admin dashboard.
 
 This repository is the current backend: a modular NestJS application that serves the frontend, uses PostgreSQL as its source of truth, and keeps compatibility with the existing production data model.
 
@@ -26,11 +26,11 @@ This repository is the current backend: a modular NestJS application that serves
 - Handling signed payment webhooks idempotently, including replay protection and entitlement updates.
 - Shipping operational discipline: explicit migrations, production configuration validation, health/readiness endpoints, CI, and regression tests.
 
-## Project status and the Django showcase
+## Legacy Django showcase
 
 The public product showcase and some older screenshots describe the **legacy Django version** of TriviaSpirit. That showcase is useful for seeing the product concept and UI, but it is not the current backend implementation and should not be used to evaluate the API architecture.
 
-The current backend is this repository: **[TriviaSpirit NestJS Backend](https://github.com/Mohcen56/triviaspirit-backend)**. Recruiters can verify the implementation directly in the source, CI workflow, tests, migrations, and live health endpoint above.
+The current backend is this repository: **[TriviaSpirit NestJS Backend](https://github.com/Mohcen56/triviaspirit-backend-Nest.js)**. Recruiters can verify the implementation directly in the source, CI workflow, tests, migrations, and live health endpoint above.
 
 The frontend is maintained separately and can be pointed at this API with `BACKEND_API_URL` and `NEXT_PUBLIC_API_BASE_URL`.
 
