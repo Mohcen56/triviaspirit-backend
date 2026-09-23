@@ -566,6 +566,7 @@ integrationDescribe('TriviaSpirit API compatibility (e2e)', () => {
           total: 1499,
           currency: 'USD',
           status: 'paid',
+          test_mode: true,
           updated_at: '2026-09-22T00:00:00.000Z',
           first_order_item: {
             variant_id: 'variant-1',
@@ -625,11 +626,15 @@ integrationDescribe('TriviaSpirit API compatibility (e2e)', () => {
       .set('Authorization', `Token ${secondUser.token}`)
       .send({ plan: 'attacker-controlled-plan' })
       .expect(400);
+    const fetchSpy = jest
+      .spyOn(global, 'fetch')
+      .mockRejectedValueOnce(new Error('provider unavailable'));
     await request(app.getHttpServer())
       .post('/api/payments/checkout')
       .set('Authorization', `Token ${secondUser.token}`)
       .send({ plan: 'premium' })
       .expect(503);
+    fetchSpy.mockRestore();
   });
 
   it('durably throttles repeated login attempts by account', async () => {

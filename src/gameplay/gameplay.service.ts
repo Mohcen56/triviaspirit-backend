@@ -206,11 +206,14 @@ export class GameplayService {
         additions.map(({ gameId, questionId }) => ({ gameId, questionId })),
       )
       .orIgnore()
+      .returning(['id'])
       .updateEntity(false)
       .execute();
     return {
       status: 'ok',
-      saved: Array.isArray(result.raw) ? result.raw.length : 0,
+      saved:
+        result.identifiers.length ||
+        (Array.isArray(result.raw) ? result.raw.length : 0),
     };
   }
 
