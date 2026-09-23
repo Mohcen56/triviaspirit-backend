@@ -563,6 +563,7 @@ integrationDescribe('TriviaSpirit API compatibility (e2e)', () => {
         type: 'orders',
         attributes: {
           customer_id: 'customer-1',
+          store_id: 'integration-test-store',
           total: 1499,
           currency: 'USD',
           status: 'paid',
