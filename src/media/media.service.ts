@@ -12,9 +12,12 @@ import sharp from 'sharp';
 
 export type StoredImage = { key: string; hash: string };
 
+const R2_MEDIA_PREFIX = 'media';
+
 @Injectable()
 export class MediaService {
   private readonly s3: S3Client | null;
+  private readonly r2PublicUrl: string | null;
 
   constructor(private readonly config: ConfigService) {
     const endpoint = config.get<string>('CLOUDFLARE_R2_BUCKET_ENDPOINT');
@@ -24,6 +27,7 @@ export class MediaService {
     const publicUrl =
       config.get<string>('CLOUDFLARE_R2_CUSTOM_DOMAIN') ||
       config.get<string>('CLOUDFLARE_R2_PUBLIC_URL');
+    this.r2PublicUrl = publicUrl?.replace(/\/$/, '') || null;
     const r2Configuration = [
       endpoint,
       accessKeyId,
@@ -102,7 +106,7 @@ export class MediaService {
       await this.s3.send(
         new PutObjectCommand({
           Bucket: bucket,
-          Key: key,
+          Key: this.r2ObjectKey(key),
           Body: optimized,
           ContentType: 'image/webp',
         }),
@@ -129,7 +133,12 @@ export class MediaService {
     if (this.s3 && bucket) {
       await Promise.all(
         uniqueKeys.map((key) =>
-          this.s3!.send(new DeleteObjectCommand({ Bucket: bucket, Key: key })),
+          this.s3!.send(
+            new DeleteObjectCommand({
+              Bucket: bucket,
+              Key: this.r2ObjectKey(key),
+            }),
+          ),
         ),
       );
       return;
@@ -156,10 +165,15 @@ export class MediaService {
     if (/^https?:\/\//i.test(value)) return value;
     const key = value.replace(/^\/?media\//, '').replace(/^\//, '');
     const base =
-      this.config.get<string>('CLOUDFLARE_R2_CUSTOM_DOMAIN') ||
-      this.config.get<string>('CLOUDFLARE_R2_PUBLIC_URL') ||
+      this.r2PublicUrl ||
       this.config.get<string>('MEDIA_PUBLIC_URL') ||
       `http://localhost:${this.config.get('PORT', 8000)}/media`;
-    return `${base.replace(/\/$/, '')}/${key}`;
+    const objectKey = this.s3 ? this.r2ObjectKey(key) : key;
+    return `${base.replace(/\/$/, '')}/${objectKey}`;
+  }
+
+  private r2ObjectKey(value: string): string {
+    const key = value.replace(/^\/?media\//, '').replace(/^\//, '');
+    return `${R2_MEDIA_PREFIX}/${key}`;
   }
 }

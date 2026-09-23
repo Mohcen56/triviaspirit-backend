@@ -950,12 +950,15 @@ export async function setupAdmin(app: NestExpressApplication): Promise<void> {
     [CategoryEntity, ['image']],
     [QuestionEntity, ['image', 'answerImage']],
   ]);
-  const mediaBaseUrl = (
+  const r2Domain =
     config.get<string>('CLOUDFLARE_R2_CUSTOM_DOMAIN') ||
-    config.get<string>('CLOUDFLARE_R2_PUBLIC_URL') ||
-    config.get<string>('MEDIA_PUBLIC_URL') ||
-    `http://localhost:${config.get('PORT', 8000)}/media`
-  ).replace(/\/$/, '');
+    config.get<string>('CLOUDFLARE_R2_PUBLIC_URL');
+  const mediaBaseUrl = r2Domain
+    ? `${r2Domain.replace(/\/$/, '')}/media`
+    : (
+        config.get<string>('MEDIA_PUBLIC_URL') ||
+        `http://localhost:${config.get('PORT', 8000)}/media`
+      ).replace(/\/$/, '');
   resources.forEach((resource) => {
     const propertyNames = mediaProperties.get(resource.resource);
     if (!propertyNames) return;
