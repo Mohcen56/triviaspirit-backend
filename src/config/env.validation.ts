@@ -69,14 +69,21 @@ export function validateEnvironment(environment: Environment): Environment {
     'Cloudflare R2',
   );
 
-  const paymentNames = [
-    'LEMONSQUEEZY_API_KEY',
-    'LEMONSQUEEZY_STORE_ID',
-    'LEMONSQUEEZY_VARIANT_ID',
-    'LEMONSQUEEZY_WEBHOOK_SECRET',
-    'LEMONSQUEEZY_TEST_MODE',
-  ];
-  validateCompleteIntegration(environment, paymentNames, 'Lemon Squeezy');
+  const apiKeyConfigured = Boolean(text(environment.LEMONSQUEEZY_API_KEY));
+  const storeConfigured = Boolean(text(environment.LEMONSQUEEZY_STORE_ID));
+  const variantConfigured = Boolean(text(environment.LEMONSQUEEZY_VARIANT_ID));
+  if ((apiKeyConfigured || storeConfigured) && !variantConfigured) {
+    throw new Error('Lemon Squeezy checkout configuration is incomplete');
+  }
+  if (apiKeyConfigured !== storeConfigured) {
+    throw new Error('Lemon Squeezy checkout configuration is incomplete');
+  }
+  const checkoutConfigured =
+    apiKeyConfigured && storeConfigured && variantConfigured;
+  if (checkoutConfigured) {
+    requireText(environment, 'LEMONSQUEEZY_WEBHOOK_SECRET');
+    requireText(environment, 'LEMONSQUEEZY_TEST_MODE');
+  }
   validateBoolean(environment, 'LEMONSQUEEZY_TEST_MODE');
 
   if (nodeEnv === 'production') {

@@ -33,19 +33,29 @@ export class PaymentsService implements OnModuleInit {
   ) {}
 
   onModuleInit() {
-    const paymentConfiguration = [
-      'LEMONSQUEEZY_API_KEY',
-      'LEMONSQUEEZY_STORE_ID',
-      'LEMONSQUEEZY_VARIANT_ID',
-    ].map((name) => Boolean(this.config.get<string>(name)));
-    const configuredCount = paymentConfiguration.filter(Boolean).length;
-    if (configuredCount > 0 && configuredCount < paymentConfiguration.length) {
+    const apiKeyConfigured = Boolean(
+      this.config.get<string>('LEMONSQUEEZY_API_KEY'),
+    );
+    const storeConfigured = Boolean(
+      this.config.get<string>('LEMONSQUEEZY_STORE_ID'),
+    );
+    const variantConfigured = Boolean(
+      this.config.get<string>('LEMONSQUEEZY_VARIANT_ID'),
+    );
+    if ((apiKeyConfigured || storeConfigured) && !variantConfigured) {
       throw new Error(
         'LEMONSQUEEZY_API_KEY, LEMONSQUEEZY_STORE_ID, and LEMONSQUEEZY_VARIANT_ID must be configured together',
       );
     }
+    if (apiKeyConfigured !== storeConfigured) {
+      throw new Error(
+        'LEMONSQUEEZY_API_KEY, LEMONSQUEEZY_STORE_ID, and LEMONSQUEEZY_VARIANT_ID must be configured together',
+      );
+    }
+    const checkoutConfigured =
+      apiKeyConfigured && storeConfigured && variantConfigured;
     if (
-      configuredCount === paymentConfiguration.length &&
+      checkoutConfigured &&
       !this.config.get<string>('LEMONSQUEEZY_WEBHOOK_SECRET')
     ) {
       throw new Error(
@@ -53,7 +63,7 @@ export class PaymentsService implements OnModuleInit {
       );
     }
     if (
-      configuredCount === paymentConfiguration.length &&
+      checkoutConfigured &&
       !this.config.get<string>('LEMONSQUEEZY_TEST_MODE')
     ) {
       throw new Error(

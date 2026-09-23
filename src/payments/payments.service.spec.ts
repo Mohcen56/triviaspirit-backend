@@ -100,4 +100,12 @@ describe('PaymentsService webhook security', () => {
       ),
     ).toThrow(BadRequestException);
   });
+
+  it('allows webhook-only variant checks without checkout credentials', () => {
+    const { subject } = service({
+      LEMONSQUEEZY_WEBHOOK_SECRET: 'secret',
+      LEMONSQUEEZY_VARIANT_ID: 'premium-variant',
+    });
+    expect(() => subject.onModuleInit()).not.toThrow();
+  });
 });

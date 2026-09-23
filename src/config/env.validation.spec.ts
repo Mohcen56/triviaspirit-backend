@@ -12,9 +12,18 @@ describe('validateEnvironment', () => {
         PORT: '8000',
         LEMONSQUEEZY_API_KEY: 'key',
       }),
-    ).toThrow('Lemon Squeezy configuration is incomplete');
+    ).toThrow('Lemon Squeezy checkout configuration is incomplete');
 
     expect(validateEnvironment({ ...base, PORT: '8000' }).PORT).toBe(8000);
+  });
+
+  it('allows webhook-only payment verification configuration', () => {
+    const validated = validateEnvironment({
+      ...base,
+      LEMONSQUEEZY_WEBHOOK_SECRET: 'secret',
+      LEMONSQUEEZY_VARIANT_ID: 'variant-1',
+    });
+    expect(validated.LEMONSQUEEZY_VARIANT_ID).toBe('variant-1');
   });
 
   it('requires strong production secrets and origins', () => {
