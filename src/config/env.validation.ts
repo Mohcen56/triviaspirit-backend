@@ -61,17 +61,21 @@ export function validateEnvironment(environment: Environment): Environment {
   }
   validateTrustProxy(environment);
 
-  validateCompleteIntegration(
-    environment,
-    [
-      'CLOUDFLARE_R2_BUCKET_ENDPOINT',
-      'CLOUDFLARE_R2_ACCESS_KEY',
-      'CLOUDFLARE_R2_SECRET_KEY',
-      'CLOUDFLARE_R2_BUCKET',
-      'CLOUDFLARE_R2_PUBLIC_URL',
-    ],
-    'Cloudflare R2',
-  );
+  const r2PublicUrl =
+    text(environment.CLOUDFLARE_R2_CUSTOM_DOMAIN) ||
+    text(environment.CLOUDFLARE_R2_PUBLIC_URL);
+  const r2CoreConfiguration = [
+    'CLOUDFLARE_R2_BUCKET_ENDPOINT',
+    'CLOUDFLARE_R2_ACCESS_KEY',
+    'CLOUDFLARE_R2_SECRET_KEY',
+    'CLOUDFLARE_R2_BUCKET',
+  ];
+  const r2ConfiguredCount =
+    r2CoreConfiguration.filter((name) => Boolean(text(environment[name])))
+      .length + Number(Boolean(r2PublicUrl));
+  if (r2ConfiguredCount > 0 && r2ConfiguredCount < 5) {
+    throw new Error('Cloudflare R2 configuration is incomplete');
+  }
 
   const paymentNames = [
     'LEMONSQUEEZY_API_KEY',
@@ -101,6 +105,7 @@ export function validateEnvironment(environment: Environment): Environment {
 
   return {
     ...environment,
+    ...(r2PublicUrl ? { CLOUDFLARE_R2_CUSTOM_DOMAIN: r2PublicUrl } : {}),
     DATABASE_URL: databaseUrl,
     NODE_ENV: nodeEnv,
     PORT: port,

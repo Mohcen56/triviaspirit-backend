@@ -181,7 +181,7 @@ CLOUDFLARE_R2_BUCKET=
 CLOUDFLARE_R2_ACCESS_KEY=
 CLOUDFLARE_R2_SECRET_KEY=
 CLOUDFLARE_R2_BUCKET_ENDPOINT=
-CLOUDFLARE_R2_PUBLIC_URL=
+CLOUDFLARE_R2_CUSTOM_DOMAIN=
 ```
 
 The service validates uploads, resizes large images, and stores them as WebP.
@@ -228,7 +228,7 @@ The suite covers registration/login/authentication, Django password and token co
 - PostgreSQL connection refused: confirm the database is reachable and the URL is correct.
 - Existing hosted database rejects the connection: set `DATABASE_SSL=true`.
 - Frontend returns `Proxy request failed`: confirm the API is running on port 8000 and `NEXT_PUBLIC_API_BASE_URL` points to it.
-- Existing R2 images do not load: set `CLOUDFLARE_R2_PUBLIC_URL` to the public bucket or custom-domain base URL.
+- Existing R2 images do not load: set `CLOUDFLARE_R2_CUSTOM_DOMAIN` to the public bucket or custom-domain base URL.
 - Authentication requests fail because `security_auth_rate_limit` is missing: run `npm run migration:run` before starting the new build.
 
 ## License

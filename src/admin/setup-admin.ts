@@ -951,6 +951,7 @@ export async function setupAdmin(app: NestExpressApplication): Promise<void> {
     [QuestionEntity, ['image', 'answerImage']],
   ]);
   const mediaBaseUrl = (
+    config.get<string>('CLOUDFLARE_R2_CUSTOM_DOMAIN') ||
     config.get<string>('CLOUDFLARE_R2_PUBLIC_URL') ||
     config.get<string>('MEDIA_PUBLIC_URL') ||
     `http://localhost:${config.get('PORT', 8000)}/media`

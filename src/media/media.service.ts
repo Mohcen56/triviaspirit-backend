@@ -21,7 +21,9 @@ export class MediaService {
     const accessKeyId = config.get<string>('CLOUDFLARE_R2_ACCESS_KEY');
     const secretAccessKey = config.get<string>('CLOUDFLARE_R2_SECRET_KEY');
     const bucket = config.get<string>('CLOUDFLARE_R2_BUCKET');
-    const publicUrl = config.get<string>('CLOUDFLARE_R2_PUBLIC_URL');
+    const publicUrl =
+      config.get<string>('CLOUDFLARE_R2_CUSTOM_DOMAIN') ||
+      config.get<string>('CLOUDFLARE_R2_PUBLIC_URL');
     const r2Configuration = [
       endpoint,
       accessKeyId,
@@ -154,6 +156,7 @@ export class MediaService {
     if (/^https?:\/\//i.test(value)) return value;
     const key = value.replace(/^\/?media\//, '').replace(/^\//, '');
     const base =
+      this.config.get<string>('CLOUDFLARE_R2_CUSTOM_DOMAIN') ||
       this.config.get<string>('CLOUDFLARE_R2_PUBLIC_URL') ||
       this.config.get<string>('MEDIA_PUBLIC_URL') ||
       `http://localhost:${this.config.get('PORT', 8000)}/media`;

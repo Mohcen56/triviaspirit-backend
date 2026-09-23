@@ -42,4 +42,18 @@ describe('validateEnvironment', () => {
     });
     expect(environment.DATABASE_URL).toBe(environment.NEON_DATABASE_URL);
   });
+
+  it('accepts the R2 custom domain as the public media URL', () => {
+    const environment = validateEnvironment({
+      ...base,
+      CLOUDFLARE_R2_BUCKET_ENDPOINT: 'https://account.r2.cloudflarestorage.com',
+      CLOUDFLARE_R2_ACCESS_KEY: 'access-key',
+      CLOUDFLARE_R2_SECRET_KEY: 'secret-key',
+      CLOUDFLARE_R2_BUCKET: 'media',
+      CLOUDFLARE_R2_CUSTOM_DOMAIN: 'https://images.example.com',
+    });
+    expect(environment.CLOUDFLARE_R2_CUSTOM_DOMAIN).toBe(
+      'https://images.example.com',
+    );
+  });
 });
