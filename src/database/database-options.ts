@@ -8,8 +8,10 @@ function enabled(value: string | undefined): boolean {
 export function databaseOptions(
   environment: NodeJS.ProcessEnv = process.env,
 ): PostgresConnectionOptions {
-  const url = environment.DATABASE_URL;
-  if (!url) throw new Error('DATABASE_URL must be configured');
+  const url = environment.DATABASE_URL || environment.NEON_DATABASE_URL;
+  if (!url) {
+    throw new Error('DATABASE_URL or NEON_DATABASE_URL must be configured');
+  }
   const production = environment.NODE_ENV === 'production';
   const synchronize = enabled(environment.DATABASE_SYNCHRONIZE);
   const sslEnabled = enabled(environment.DATABASE_SSL);

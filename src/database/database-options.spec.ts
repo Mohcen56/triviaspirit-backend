@@ -31,4 +31,13 @@ describe('databaseOptions production safeguards', () => {
     expect(options.ssl).toEqual({ rejectUnauthorized: true });
     expect(options.synchronize).toBe(false);
   });
+
+  it('accepts NEON_DATABASE_URL when DATABASE_URL is not set', () => {
+    const options = databaseOptions({
+      ...base,
+      DATABASE_URL: undefined,
+      NEON_DATABASE_URL: 'postgresql://user:password@localhost/neon',
+    });
+    expect(options.url).toBe('postgresql://user:password@localhost/neon');
+  });
 });

@@ -45,7 +45,11 @@ export function validateEnvironment(environment: Environment): Environment {
     throw new Error('PORT must be an integer between 1 and 65535');
   }
 
-  requireText(environment, 'DATABASE_URL');
+  const databaseUrl =
+    text(environment.DATABASE_URL) || text(environment.NEON_DATABASE_URL);
+  if (!databaseUrl) {
+    throw new Error('DATABASE_URL or NEON_DATABASE_URL must be configured');
+  }
   for (const name of [
     'DATABASE_SSL',
     'DATABASE_SSL_REJECT_UNAUTHORIZED',
@@ -95,5 +99,10 @@ export function validateEnvironment(environment: Environment): Environment {
     requireText(environment, 'CORS_ALLOWED_ORIGINS');
   }
 
-  return { ...environment, NODE_ENV: nodeEnv, PORT: port };
+  return {
+    ...environment,
+    DATABASE_URL: databaseUrl,
+    NODE_ENV: nodeEnv,
+    PORT: port,
+  };
 }

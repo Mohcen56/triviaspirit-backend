@@ -35,4 +35,11 @@ describe('validateEnvironment', () => {
       '2',
     );
   });
+
+  it('accepts the Neon-specific database variable as a fallback', () => {
+    const environment = validateEnvironment({
+      NEON_DATABASE_URL: 'postgresql://user:password@localhost/database',
+    });
+    expect(environment.DATABASE_URL).toBe(environment.NEON_DATABASE_URL);
+  });
 });
